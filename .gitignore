@@ -1,0 +1,19 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# Build artifacts
+build/
+*.bin
+*.elf
+*.hex
+*.map
+
+# Editor
+.vscode/
+.idea/
+
+# OS cruft
+.DS_Store
+Thumbs.db
