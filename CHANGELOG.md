@@ -8,7 +8,7 @@ versions use [Semantic Versioning](https://semver.org/) (MAJOR.MINOR.PATCH).
 
 Consolidates two divergent codebases (the private dev repo and this public
 repo's `main`/`release`/`Battery` branches) into one program, renamed
-**CoastalWeather**. `Battery` becomes the sole branch going forward.
+**Coastal Weather Display**. `Battery` becomes the sole branch going forward.
 
 ### Added
 - On-board battery monitoring: reads the Freenove FNK0104AB's built-in
@@ -34,10 +34,12 @@ repo's `main`/`release`/`Battery` branches) into one program, renamed
   fill the gap — internal proportions of each panel are unchanged.
 
 ### Changed
-- Renamed "Weather Display" → "CoastalWeather" throughout: default device
-  name, AP setup SSID prefix (`CoastalWeather-`), mDNS default hostname
-  (`coastalweather`), NWS user-agent, README/CHANGELOG titles, and web
-  dashboard title/heading.
+- Renamed "Weather Display" → "Coastal Weather Display" throughout: default
+  device name, AP setup SSID prefix (`Coastal Weather Display-`), mDNS
+  default hostname (`coastal-weather-display`), NWS user-agent
+  (`CoastalWeatherDisplay/`, no spaces per HTTP product-token convention),
+  README/CHANGELOG titles, and web dashboard title/heading. The GitHub repo
+  is `CoastalWeatherDisplay`.
 - HAZARDS marquee text no longer hardcodes a place name ("North Topsail
   Beach") — now uses the configured `wxPlace`, so a relocated device doesn't
   show a stale location in the scrolling headline.

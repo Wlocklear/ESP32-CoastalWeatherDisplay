@@ -1,4 +1,4 @@
-# CoastalWeather
+# Coastal Weather Display
 
 A remote TFT display (Freenove ESP32-S3 2.8", ILI9341 240x320) that pulls
 NWS weather, NOAA tide, and marine advisory data directly over WiFi and
@@ -59,7 +59,7 @@ finders); the hazard zones are compile-time only.
 ## WiFi setup
 
 No hardcoded credentials. On first boot (or failed join), the device starts
-an AP named `CoastalWeather-XXXX` — connect and open `http://192.168.4.1` to
+an AP named `Coastal Weather Display-XXXX` — connect and open `http://192.168.4.1` to
 pick a network and password. Credentials are saved to NVS.
 
 ## Build & flash
@@ -72,7 +72,7 @@ pio run -e esp32s3 -t upload
 pio run -e esp32s3-ota -t upload
 ```
 
-OTA is also available in a browser at `http://coastalweather.local/update`
+OTA is also available in a browser at `http://coastal-weather-display.local/update`
 (ElegantOTA).
 
 ## Versioning

@@ -1,6 +1,6 @@
 /*
  ******************************************************************************
- *  CoastalWeather
+ *  Coastal Weather Display
  ******************************************************************************
  *
  *  TARGET BOARD:
@@ -25,7 +25,7 @@
  *             compact meter just above the IP/version footer.
  *
  *  WiFi SETUP (no hardcoded credentials):
- *    First boot / failed join -> AP "CoastalWeather-XXXX", open http://192.168.4.1,
+ *    First boot / failed join -> AP "Coastal Weather Display-XXXX", open http://192.168.4.1,
  *    pick network + password. Saved to NVS; creds from previous firmware reused.
  *
  *  LOCATION / STATION SETUP:
@@ -68,11 +68,12 @@
 #endif
 
 // ── AP portal ───────────────────────────────────────────────────────────────
-#define AP_SSID_PREFIX   "CoastalWeather-"
-#define DEFAULT_DEVICE_NAME  "CoastalWeather"
+#define AP_SSID_PREFIX   "Coastal Weather Display-"
+#define DEFAULT_DEVICE_NAME  "Coastal Weather Display"
 
 // ── Weather (NWS; default location comes from user_config.h) ────────────────
-#define NWS_USER_AGENT  "CoastalWeather/" FW_VERSION " (" NWS_CONTACT ")"
+// (no spaces in the HTTP User-Agent product token, per RFC 7231 convention)
+#define NWS_USER_AGENT  "CoastalWeatherDisplay/" FW_VERSION " (" NWS_CONTACT ")"
 #define WEATHER_INTERVAL_MS   (10UL * 60UL * 1000UL)   // refresh every 10 min
 #define WEATHER_RETRY_MS      (60UL * 1000UL)
 
@@ -267,7 +268,7 @@ String sanitizeMDNS(const String& input) {
   }
   while (out.startsWith("-")) out = out.substring(1);
   while (out.endsWith("-"))   out = out.substring(0, out.length() - 1);
-  if (out.isEmpty())          out = "coastalweather";
+  if (out.isEmpty())          out = "coastal-weather-display";
   return out;
 }
 void startMDNS() {
@@ -427,7 +428,8 @@ void drawBootScreen() {
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COL_ACCENT, COL_BG);
   tft.setTextFont(4);
-  tft.drawString("CoastalWeather", 120, 120);
+  tft.drawString("Coastal Weather", 120, 110);
+  tft.drawString("Display", 120, 134);
   tft.setTextFont(2);
   tft.setTextColor(COL_DIM, COL_BG);
   tft.drawString("v" FW_VERSION, 120, 158);
@@ -946,7 +948,7 @@ bool fetchTides() {
 
   String url = String(
       "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?"
-      "product=predictions&application=coastalweather&datum=MLLW&station=")
+      "product=predictions&application=coastalweatherdisplay&datum=MLLW&station=")
     + tideStation
     + "&time_zone=lst_ldt&units=english&interval=hilo&format=json&begin_date="
     + beginDate + "&range=48";
@@ -1272,7 +1274,7 @@ void handleRoot() {
   server.send(200, "text/html", R"DASH(
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CoastalWeather</title>
+<title>Coastal Weather Display</title>
 <style>
 :root{--bg:#0d0f1a;--card:#1a1e33;--bdr:#252840;--bdr2:#363c66;--acc:#4f8ef7;
  --grn:#3ecf8e;--red:#f76e6e;--warn:#f7b84f;--dim:#8892a4;--txt:#dde3f0;--cya:#4fcfef;--sun:#ffd140;}
@@ -1335,7 +1337,7 @@ select:focus{border-color:var(--acc)}
  padding-top:.5rem;margin-top:.3rem;font-size:.72rem;color:var(--dim)}
 #upd{text-align:center;font-size:.73rem;color:var(--dim);margin-top:.4rem}
 </style></head><body>
-<h1 id="hTitle">CoastalWeather</h1>
+<h1 id="hTitle">Coastal Weather Display</h1>
 
 <div class="panel">
   <h2><span>Weather</span><b id="wxPlace"></b></h2>
@@ -1550,8 +1552,8 @@ function batteryIconSVG(color,percent){
 var locInit=false;
 function update(){
  fetch('/status').then(function(r){return r.json();}).then(function(d){
-  $('hTitle').textContent=d.device||'CoastalWeather';
-  document.title=d.device||'CoastalWeather';
+  $('hTitle').textContent=d.device||'Coastal Weather Display';
+  document.title=d.device||'Coastal Weather Display';
   $('fwVer').textContent='v'+(d.firmware||'');
   $('wxPlace').textContent=d.place||'';
   $('tidePlace').textContent=d.tidePlace||'';
@@ -1755,7 +1757,7 @@ void startAPPortal() {
     server.send(200, "text/html", R"HTML(
 <!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>CoastalWeather Setup</title>
+<title>Coastal Weather Display Setup</title>
 <style>
 body{background:#111;color:#eee;font-family:Arial,sans-serif;display:flex;
  justify-content:center;align-items:center;min-height:100vh;margin:0;padding:1rem;box-sizing:border-box}
@@ -1776,7 +1778,7 @@ button:hover{background:#3a7de0}.scan-btn{background:#252840}.scan-btn:hover{bac
 #scanning{color:#8892a4;font-size:.85rem;margin:.5rem 0}
 </style></head><body>
 <div class="box">
-  <h2>CoastalWeather WiFi Setup</h2>
+  <h2>Coastal Weather Display WiFi Setup</h2>
   <button class="scan-btn" onclick="doScan()">Scan for Networks</button>
   <div id="scanning" style="display:none">Scanning...</div>
   <div id="netList"></div>
@@ -1912,7 +1914,7 @@ void setupArduinoOTA() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.println("\n[BOOT] CoastalWeather v" FW_VERSION);
+  Serial.println("\n[BOOT] Coastal Weather Display v" FW_VERSION);
   bootMillis = millis();
 
   // Force backlight on before init — GPIO floats low after OTA reboot.
