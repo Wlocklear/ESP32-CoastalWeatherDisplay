@@ -1,4 +1,4 @@
-# Weather Display
+# CoastalWeather
 
 A remote TFT display (Freenove ESP32-S3 2.8", ILI9341 240x320) that pulls
 NWS weather, NOAA tide, and marine advisory data directly over WiFi and
@@ -7,13 +7,15 @@ shows it on-screen — no source unit or paired sensor required.
 ESP32 firmware. The version lives in one place — `version.h` — and should match the
 git tag for each release.
 
-> **Current version:** v0.14
+> **Current version:** v1.0
 
 ## Hardware
 
 - **Board:** Freenove ESP32-S3 2.8" display (ESP32-S3-DevKitC target)
 - **Display:** ILI9341 240x320 SPI TFT
 - **Backlight:** GPIO45 (confirmed working)
+- **Battery sense:** GPIO9, board's built-in 0.5x resistive divider (JST battery
+  connector) — see `fetchBattery()` in `src/main.cpp`
 - **Graphics:** [TFT_eSPI](https://github.com/Bodmer/TFT_eSPI), configured entirely
   via `build_flags` in `platformio.ini` (no `User_Setup.h` to edit)
 
@@ -23,31 +25,41 @@ git tag for each release.
 
 ## What it shows
 
-- **Weather** — NWS forecast (api.weather.gov, no API key) for configured location:
-  condition icon + scrolling condition text (forecast), with CURRENT temp +
-  humidity pulled from the nearest live weather station rather than the forecast's
-  predicted value.
-- **Tides** — Next high/low tide predictions (NOAA CO-OPS) for the nearest tide
-  station to your location, plus a moon-phase icon + name.
-- **Hazards** — NWS small-craft advisory (marine zone) and rip current/beach
-  hazards statement (coastal zone), combined into one scrolling headline; icon/text
-  turn amber if either is active.
+- **Weather** — NWS forecast (api.weather.gov, no API key) for your configured
+  location: condition icon + scrolling condition text (forecast), with CURRENT
+  temp + humidity pulled from the nearest live station observation
+  (`WX_STATION`) rather than the forecast's predicted value.
+- **Tides** — Next high/low tide predictions (NOAA CO-OPS) for your configured
+  tide station, plus a moon-phase icon + name.
+- **Hazards** — NWS small-craft advisory (your marine zone) and rip
+  current/beach hazards statement (your land zone), combined into one
+  scrolling headline; icon/text turn amber if either is active.
 - **Wind / pressure** — live wind speed + direction and barometric pressure,
-  from the same weather station observation as the current temp/humidity.
-- **Coastal Waters Forecast** — NOAA/NWS text bulletin (product CWF) for your
-  region; shows the current period's synopsis (winds/seas), scrolling. Refreshes
-  hourly.
+  from the same station observation as the current temp/humidity.
+- **Battery** — on-board voltage + estimated charge percentage, shown as a
+  compact meter just above the footer. Reads locally (GPIO9), no network call
+  needed.
 
-**Location configuration:** On first boot or if WiFi fails to connect, the device
-starts an AP named `WeatherSetup-XXXX`. Connect and open `http://192.168.4.1` to:
-1. Enter your WiFi SSID and password
-2. Enter latitude/longitude for the weather location + an optional place name
-Both are saved to NVS. Change location anytime by wiping NVS or resetting WiFi credentials.
+## Configuration
+
+Personal settings live in `include/user_config.h`, which is **gitignored** —
+copy the template and edit it before building:
+
+```bash
+cp include/user_config.example.h include/user_config.h
+```
+
+It holds your NWS contact email (User-Agent), OTA login, default location
+(lat/lon, place, weather + tide stations), fixed hazard zones
+(`MARINE_ZONE`, `RIP_ZONE`), and timezone. The template has notes on finding
+each value for your area. Location and stations can also be changed later
+from the device's web dashboard (saved to NVS, with built-in city/station
+finders); the hazard zones are compile-time only.
 
 ## WiFi setup
 
 No hardcoded credentials. On first boot (or failed join), the device starts
-an AP named `WeatherSetup-XXXX` — connect and open `http://192.168.4.1` to
+an AP named `CoastalWeather-XXXX` — connect and open `http://192.168.4.1` to
 pick a network and password. Credentials are saved to NVS.
 
 ## Build & flash
@@ -60,7 +72,7 @@ pio run -e esp32s3 -t upload
 pio run -e esp32s3-ota -t upload
 ```
 
-OTA is also available in a browser at `http://weatherdisplay.local/update`
+OTA is also available in a browser at `http://coastalweather.local/update`
 (ElegantOTA).
 
 ## Versioning

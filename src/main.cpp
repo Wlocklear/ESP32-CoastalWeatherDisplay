@@ -1,6 +1,6 @@
 /*
  ******************************************************************************
- *  Weather Display
+ *  CoastalWeather
  ******************************************************************************
  *
  *  TARGET BOARD:
@@ -9,68 +9,38 @@
  *    platformio.ini. USE_HSPI_PORT=1 is required (see platformio.ini).
  *
  *  WHAT IT SHOWS (portrait):
- *    TOP    — Weather icon for Hampstead, NC (US National Weather Service,
- *             api.weather.gov, no API key) NEXT TO a large CURRENT
- *             temperature + humidity (live station observation, WX_STATION).
- *             The forecast condition scrolls beneath, followed directly by
- *             a NOAA Coastal Waters Forecast (CWF text bulletin, office MHX)
- *             scrolling line for the current period.
- *    MIDDLE — Next high/low TIDES for Hampstead, NC (NOAA CO-OPS, station
- *             8657813). Needs NTP time to know which events are upcoming.
- *    BOTTOM — NWS hazard alerts: small-craft advisory (marine zone) + rip
- *             current/beach hazards statement (land zone), one combined
- *             scrolling headline. Below that, live wind + barometric
- *             pressure (same station observation as the hero readings).
+ *    TOP    — Weather icon for the configured location (US National Weather
+ *             Service, api.weather.gov, no API key) NEXT TO a large CURRENT
+ *             temperature + humidity (live station observation, wxStation).
+ *             The forecast condition scrolls beneath.
+ *    MIDDLE — Next high/low TIDES for the configured tide station (NOAA
+ *             CO-OPS), plus a moon-phase strip. Needs NTP time to know which
+ *             events are upcoming. Below that, NWS hazard alerts: small-craft
+ *             advisory (marine zone) + rip current/beach hazards statement
+ *             (land zone), one combined scrolling headline, then live wind +
+ *             barometric pressure (same station observation as the hero
+ *             readings).
+ *    BOTTOM — On-board battery voltage + charge percentage (GPIO9, the
+ *             Freenove FNK0104AB's built-in 0.5x divider), shown as a
+ *             compact meter just above the IP/version footer.
  *
  *  WiFi SETUP (no hardcoded credentials):
- *    First boot / failed join -> AP "WeatherSetup-XXXX", open http://192.168.4.1,
+ *    First boot / failed join -> AP "CoastalWeather-XXXX", open http://192.168.4.1,
  *    pick network + password. Saved to NVS; creds from previous firmware reused.
  *
+ *  LOCATION / STATION SETUP:
+ *    Defaults come from include/user_config.h. Change anytime from the web
+ *    dashboard's "Change Location / Stations" card (lat/lon, place name, NWS
+ *    weather station code, NOAA tide station number). Saved to NVS; device
+ *    reboots to pick up the new forecast URL and station IDs. Marine/rip
+ *    zones stay fixed to the user_config.h values regardless.
+ *
  *  OTA:
- *    ElegantOTA  -> http://<device>.local/update  (user: admin / pass: pw)
+ *    ElegantOTA  -> http://<device>.local/update  (login in user_config.h)
  *    ArduinoOTA  -> PlatformIO env:esp32s3-ota     (port 3232)
  ******************************************************************************/
 
 #include "version.h"
-
-// ── AP portal / OTA credentials ─────────────────────────────────────────────
-#define AP_SSID_PREFIX   "WeatherSetup-"
-#define OTA_USER         "admin"
-#define OTA_PASS         "pw"
-#define DEFAULT_DEVICE_NAME  "Weather Display"
-
-// ── Weather — loaded from NVS on startup ───────────────────────────────────
-// Default to Hampstead, NC if no config is saved
-#define DEFAULT_WX_LAT   "34.3671"
-#define DEFAULT_WX_LON   "-77.7108"
-#define DEFAULT_WX_PLACE "Hampstead, NC"
-#define DEFAULT_WX_STATION "KILM"
-#define DEFAULT_TIDE_STATION "8657813"
-#define DEFAULT_MARINE_ZONE "AMZ158"
-#define DEFAULT_RIP_ZONE "NCZ105"
-#define DEFAULT_COASTAL_ZONE "AMZ158"
-#define DEFAULT_COASTAL_OFFICE "MHX"
-
-String wxLat, wxLon, wxPlace, wxStation, tideStation, marineZone, ripZone, coastalZone, coastalOffice;
-
-#define NWS_USER_AGENT  "WeatherDisplay/" FW_VERSION " (wlock75@gmail.com)"
-#define WEATHER_INTERVAL_MS   (10UL * 60UL * 1000UL)   // refresh every 10 min
-#define WEATHER_RETRY_MS      (60UL * 1000UL)
-#define TIDE_INTERVAL_MS      (30UL * 60UL * 1000UL)   // refresh every 30 min
-#define TIDE_RETRY_MS         (20UL * 1000UL)
-#define MARINE_INTERVAL_MS    (15UL * 60UL * 1000UL)   // refresh every 15 min
-#define MARINE_RETRY_MS       (60UL * 1000UL)
-#define COASTAL_INTERVAL_MS   (60UL * 60UL * 1000UL)   // bulletin issued a few times/day
-#define COASTAL_RETRY_MS      (5UL * 60UL * 1000UL)
-
-// ── Time (NTP) ──────────────────────────────────────────────────────────────
-#define TZ_STRING  "EST5EDT,M3.2.0,M11.1.0"            // US Eastern
-
-// ── Timing ──────────────────────────────────────────────────────────────────
-#define WIFI_RETRY_INTERVAL   30000UL
-#define FOOTER_REFRESH_MS     15000UL
-#define SCROLL_STEP_MS        70UL
-#define SCROLL_STEP_PX        2
 
 // ── Includes ────────────────────────────────────────────────────────────────
 #include <Arduino.h>
@@ -87,6 +57,42 @@ String wxLat, wxLon, wxPlace, wxStation, tideStation, marineZone, ripZone, coast
 #include <TFT_eSPI.h>
 #include <math.h>
 #include <time.h>
+
+// Personal settings (contact email, OTA login, default location, hazard
+// zones, timezone) live in include/user_config.h — gitignored. Copy
+// include/user_config.example.h to include/user_config.h and edit.
+#if __has_include("user_config.h")
+#include "user_config.h"
+#else
+#error "Missing include/user_config.h — copy include/user_config.example.h to include/user_config.h and edit it"
+#endif
+
+// ── AP portal ───────────────────────────────────────────────────────────────
+#define AP_SSID_PREFIX   "CoastalWeather-"
+#define DEFAULT_DEVICE_NAME  "CoastalWeather"
+
+// ── Weather (NWS; default location comes from user_config.h) ────────────────
+#define NWS_USER_AGENT  "CoastalWeather/" FW_VERSION " (" NWS_CONTACT ")"
+#define WEATHER_INTERVAL_MS   (10UL * 60UL * 1000UL)   // refresh every 10 min
+#define WEATHER_RETRY_MS      (60UL * 1000UL)
+
+// ── Tides (NOAA CO-OPS) ─────────────────────────────────────────────────────
+#define TIDE_INTERVAL_MS      (30UL * 60UL * 1000UL)   // refresh every 30 min
+#define TIDE_RETRY_MS         (20UL * 1000UL)
+
+// ── Marine (small-craft advisory, zone from user_config.h) ──────────────────
+#define MARINE_INTERVAL_MS    (15UL * 60UL * 1000UL)   // refresh every 15 min
+#define MARINE_RETRY_MS       (60UL * 1000UL)
+
+// ── Battery — Freenove FNK0104AB on-board sense (GPIO9, 0.5x divider) ──────
+#define BAT_ADC_PIN 9
+#define BATTERY_INTERVAL_MS   (30UL * 1000UL)           // voltage changes slowly
+
+// ── Timing ──────────────────────────────────────────────────────────────────
+#define WIFI_RETRY_INTERVAL   30000UL
+#define FOOTER_REFRESH_MS     15000UL
+#define SCROLL_STEP_MS        70UL
+#define SCROLL_STEP_PX        2
 
 // ── Objects ─────────────────────────────────────────────────────────────────
 TFT_eSPI    tft;
@@ -132,7 +138,7 @@ RipCurrent rip;
 
 // ── Marine headline marquee (second scrolling sprite) ───────────────────────
 TFT_eSprite marSpr = TFT_eSprite(&tft);
-#define MAR_Y 261
+#define MAR_Y 209
 #define MAR_H 20
 #define MAR_GAP 48
 bool   marReady = false, marScroll = false;
@@ -140,20 +146,9 @@ int    marOff = 0, marTextW = 0;
 String marText = "";
 unsigned long lastMarScrollMs = 0;
 
-// ── Coastal Waters Forecast state ───────────────────────────────────────────
-struct Coastal { bool valid = false; String period; String text; };
-Coastal coastal;
-
-// ── Coastal forecast marquee (third scrolling sprite) ───────────────────────
-TFT_eSprite coastSpr = TFT_eSprite(&tft);
-#define COAST_Y 115
-#define COAST_H 20
-#define COAST_GAP 48
-bool   coastReady = false, coastScroll = false;
-int    coastOff = 0, coastTextW = 0;
-String coastText = "";
-unsigned long lastCoastScrollMs = 0;
-unsigned long nextCoastAt = 0;
+// ── Battery state ────────────────────────────────────────────────────────────
+struct Battery { bool valid = false; float voltage = NAN; int percent = 0; bool full = false; };
+Battery batt;
 
 // ── Condition marquee state ─────────────────────────────────────────────────
 #define COND_Y 76
@@ -166,6 +161,7 @@ unsigned long lastScrollMs = 0;
 
 // ── Runtime state ───────────────────────────────────────────────────────────
 String deviceName;
+String wxLat, wxLon, wxPlace, wxStation, tideStation, tidePlace;
 bool          mdnsRunning     = false;
 bool          inAPMode        = false;
 bool          otaRunning      = false;
@@ -178,6 +174,7 @@ unsigned long nextWeatherAt   = 0;
 unsigned long lastTideOkMs    = 0;
 unsigned long nextTideAt      = 0;
 unsigned long nextMarineAt    = 0;
+unsigned long nextBatteryAt   = 0;
 
 // ── Forward declarations ────────────────────────────────────────────────────
 bool   connectWiFi();
@@ -193,13 +190,13 @@ void   drawWeatherPanel();
 void   drawHeroTemp();
 void   drawTidesPanel();
 void   drawMarinePanel();
-void   drawCoastalPanel();
+void   drawBatteryPanel();
 void   drawFooter();
 bool   fetchWeather();
 bool   fetchTides();
 bool   fetchMarine();
 bool   fetchRipCurrent();
-bool   fetchCoastalForecast();
+bool   fetchBattery();
 void   drawWindPressure();
 String sanitizeMDNS(const String& s);
 String wifiQuality(int rssi);
@@ -236,20 +233,25 @@ void clearWiFiCreds() {
   prefs.remove("pass");
   prefs.end();
 }
-
-void saveLocationConfig(const String& lat, const String& lon, const String& place) {
-  prefs.begin("location", false);
-  prefs.putString("lat", lat);
-  prefs.putString("lon", lon);
-  prefs.putString("place", place);
+void loadLocationConfig() {
+  prefs.begin("location", true);
+  wxLat       = prefs.getString("lat",       DEFAULT_WX_LAT);
+  wxLon       = prefs.getString("lon",       DEFAULT_WX_LON);
+  wxPlace     = prefs.getString("place",     DEFAULT_WX_PLACE);
+  wxStation   = prefs.getString("wxSta",     DEFAULT_WX_STATION);
+  tideStation = prefs.getString("tideSta",   DEFAULT_TIDE_STATION);
+  tidePlace   = prefs.getString("tidePlace", DEFAULT_TIDE_PLACE);
   prefs.end();
 }
-
-void loadLocationConfig(String& lat, String& lon, String& place) {
-  prefs.begin("location", true);
-  lat = prefs.getString("lat", DEFAULT_WX_LAT);
-  lon = prefs.getString("lon", DEFAULT_WX_LON);
-  place = prefs.getString("place", DEFAULT_WX_PLACE);
+void saveLocationConfig(const String& lat, const String& lon, const String& place,
+                         const String& wxSta, const String& tideSta, const String& tidePl) {
+  prefs.begin("location", false);
+  prefs.putString("lat",       lat);
+  prefs.putString("lon",       lon);
+  prefs.putString("place",     place);
+  prefs.putString("wxSta",     wxSta);
+  prefs.putString("tideSta",   tideSta);
+  prefs.putString("tidePlace", tidePl);
   prefs.end();
 }
 
@@ -265,7 +267,7 @@ String sanitizeMDNS(const String& input) {
   }
   while (out.startsWith("-")) out = out.substring(1);
   while (out.endsWith("-"))   out = out.substring(0, out.length() - 1);
-  if (out.isEmpty())          out = "weatherdisplay";
+  if (out.isEmpty())          out = "coastalweather";
   return out;
 }
 void startMDNS() {
@@ -425,7 +427,7 @@ void drawBootScreen() {
   tft.setTextDatum(MC_DATUM);
   tft.setTextColor(COL_ACCENT, COL_BG);
   tft.setTextFont(4);
-  tft.drawString("Weather Display", 120, 120);
+  tft.drawString("CoastalWeather", 120, 120);
   tft.setTextFont(2);
   tft.setTextColor(COL_DIM, COL_BG);
   tft.drawString("v" FW_VERSION, 120, 158);
@@ -586,13 +588,13 @@ static void drawMoonPhase(int cx, int cy, int r, float phase) {
 }
 
 // ============================================================
-//  DISPLAY — TIDES PANEL  (border 147, body 148..240)
+//  DISPLAY — TIDES PANEL  (border 95, body 96..188)
 // ============================================================
 static void drawTideRow(int y, bool high, const String& clock, const String& ht) {
   const int W = tft.width();
-  const int m = y + 13;
-  tft.fillRect(0, y, W, 26, COL_BG);
-  tft.setTextFont(4);
+  const int m = y + 9;
+  tft.fillRect(0, y, W, 18, COL_BG);
+  tft.setTextFont(2);
   tft.setTextColor(high ? COL_CYAN : COL_WARN, COL_BG);
   tft.setTextDatum(ML_DATUM);
   tft.drawString(high ? "High" : "Low", 12, m);
@@ -602,41 +604,63 @@ static void drawTideRow(int y, bool high, const String& clock, const String& ht)
   tft.setTextDatum(MR_DATUM);
   tft.drawString(ht.c_str(), W - 12, m);
 }
+// MOON — its own strip below the tide rows (158..188).
+static void drawMoonSection() {
+  const int W = tft.width();
+  tft.drawFastHLine(0, 158, W, COL_BORDER);
+  tft.setTextFont(1);
+  tft.setTextColor(COL_DIM, COL_BG);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString("MOON", 10, 161);
+
+  float mp = moonPhase();
+  drawMoonPhase(W - 16, 174, 11, mp);
+  String nm = moonName(mp);
+  if (nm.isEmpty()) nm = "--";
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(COL_TEXT, COL_BG);
+  tft.drawString(nm, 10, 178, 2);
+  if (mp >= 0.0f) {
+    int illum = (int)lroundf((1.0f - cosf(mp * TWO_PI)) / 2.0f * 100.0f);
+    tft.setTextColor(COL_DIM, COL_BG);
+    tft.drawString(String(illum) + "% lit", 10 + tft.textWidth(nm, 2) + 8, 178, 2);
+  }
+}
 void drawTidesPanel() {
   const int W = tft.width();
-  tft.fillRect(0, 147, W, 241 - 147, COL_BG);
-  tft.drawFastHLine(0, 147, W, COL_BORDER);
+  tft.fillRect(0, 95, W, 189 - 95, COL_BG);
+  tft.drawFastHLine(0, 95, W, COL_BORDER);
+
+  // Header: small TIDES label; tide station name featured at right.
   tft.setTextFont(2);
   tft.setTextColor(COL_CYAN, COL_BG);
   tft.setTextDatum(ML_DATUM);
-  tft.drawString("TIDES", 10, 160);
-
-  // Moon phase (drives the tides) — icon + name on the right.
-  float mp = moonPhase();
-  drawMoonPhase(W - 15, 160, 9, mp);
-  tft.setTextFont(1);
-  tft.setTextColor(COL_DIM, COL_BG);
+  tft.drawString("TIDES", 10, 108);
+  tft.setFreeFont(&FreeSansBold9pt7b);
+  tft.setTextColor(COL_TEXT, COL_BG);
   tft.setTextDatum(MR_DATUM);
-  tft.drawString(moonName(mp), W - 30, 160);
+  tft.drawString(tidePlace, W - 12, 108);
+  tft.setTextFont(2);
 
   if (!tides.valid) {
     tft.setTextColor(COL_DIM, COL_BG);
     tft.setTextDatum(MC_DATUM);
-    tft.setTextFont(2);
-    tft.drawString("Tides unavailable", W / 2, 207);
-    return;
+    tft.drawString("Tides unavailable", W / 2, 138, 2);
+  } else {
+    drawTideRow(120, tides.ev[0].high, tides.ev[0].clock,
+                String(tides.ev[0].ht, 1) + " ft");
+    if (tides.n > 1)
+      drawTideRow(138, tides.ev[1].high, tides.ev[1].clock,
+                  String(tides.ev[1].ht, 1) + " ft");
+    else
+      tft.fillRect(0, 138, W, 18, COL_BG);
   }
-  drawTideRow(178, tides.ev[0].high, tides.ev[0].clock,
-              String(tides.ev[0].ht, 1) + " ft");
-  if (tides.n > 1)
-    drawTideRow(210, tides.ev[1].high, tides.ev[1].clock,
-                String(tides.ev[1].ht, 1) + " ft");
-  else
-    tft.fillRect(0, 210, W, 26, COL_BG);
+
+  drawMoonSection();
 }
 
 // ============================================================
-//  DISPLAY — MARINE / SMALL CRAFT ADVISORY  (border 241, body 242..282)
+//  DISPLAY — MARINE / SMALL CRAFT ADVISORY  (border 189, body 190..230)
 //  Advisory headline scrolls (marquee sprite).
 // ============================================================
 static void drawBoat(int cx, int cy, uint16_t col) {
@@ -664,16 +688,16 @@ static void renderMarFrame() {
 static void setupMarineMarquee() {
   const int W = tft.width();
   if (!marine.valid || !rip.valid) {
-    marText = "North Topsail Beach  -  checking marine/rip conditions...";
+    marText = wxPlace + "  -  checking marine/rip conditions...";
   } else if (marine.active && rip.active) {
-    marText = "North Topsail Beach  -  " + marine.event + ": " + marine.headline
+    marText = wxPlace + "  -  " + marine.event + ": " + marine.headline
              + "   |   " + rip.event + ": " + rip.headline;
   } else if (marine.active) {
-    marText = "North Topsail Beach  -  " + marine.headline;
+    marText = wxPlace + "  -  " + marine.headline;
   } else if (rip.active) {
-    marText = "North Topsail Beach  -  " + rip.headline;
+    marText = wxPlace + "  -  " + rip.headline;
   } else {
-    marText = "North Topsail Beach  -  No small craft or rip current advisories in effect";
+    marText = wxPlace + "  -  No small craft or rip current advisories in effect";
   }
 
   marTextW = marReady ? marSpr.textWidth(marText, 2) : tft.textWidth(marText, 2);
@@ -683,67 +707,20 @@ static void setupMarineMarquee() {
 }
 void drawMarinePanel() {
   const int W = tft.width();
-  tft.fillRect(0, 241, W, 283 - 241, COL_BG);
-  tft.drawFastHLine(0, 241, W, COL_BORDER);
+  tft.fillRect(0, 189, W, 231 - 189, COL_BG);
+  tft.drawFastHLine(0, 189, W, COL_BORDER);
   tft.setTextFont(1);
   tft.setTextColor(COL_DIM, COL_BG);
   tft.setTextDatum(TL_DATUM);
-  tft.drawString("HAZARDS (marine/rip)", 10, 250);
-  drawBoat(W - 16, 253, marineColor());
+  tft.drawString("HAZARDS (marine/rip)", 10, 198);
+  drawBoat(W - 16, 201, marineColor());
   setupMarineMarquee();          // Font-2 scrolling line at MAR_Y
 }
 
 // ============================================================
-//  DISPLAY — COASTAL WATERS FORECAST  (border 95, body 96..146)
-//  NOAA/NWS text-bulletin synopsis for the current period; scrolls (marquee).
-// ============================================================
-static void drawWaveIcon(int cx, int cy, uint16_t col) {
-  for (int row = -1; row <= 1; row++) {
-    int y0 = cy + row * 5;
-    for (int i = 0; i < 3; i++) {
-      int x0 = cx - 9 + i * 6;
-      tft.drawLine(x0, y0 + 2, x0 + 3, y0 - 2, col);
-      tft.drawLine(x0 + 3, y0 - 2, x0 + 6, y0 + 2, col);
-    }
-  }
-}
-static void renderCoastFrame() {
-  if (!coastReady) return;
-  coastSpr.fillSprite(COL_BG);
-  coastSpr.setTextDatum(ML_DATUM);
-  coastSpr.setTextColor(coastal.valid ? COL_TEXT : COL_DIM, COL_BG);
-  int y = COAST_H / 2;
-  coastSpr.drawString(coastText, coastOff, y, 2);
-  if (coastScroll)
-    coastSpr.drawString(coastText, coastOff + coastTextW + COAST_GAP, y, 2);
-  coastSpr.pushSprite(0, COAST_Y);
-}
-static void setupCoastalMarquee() {
-  const int W = tft.width();
-  if (!coastal.valid) coastText = "Coastal waters forecast unavailable";
-  else                 coastText = coastal.period + ": " + coastal.text;
-
-  coastTextW = coastReady ? coastSpr.textWidth(coastText, 2) : tft.textWidth(coastText, 2);
-  if (coastTextW <= W - 8) { coastScroll = false; coastOff = (W - coastTextW) / 2; }
-  else                     { coastScroll = true;  coastOff = 0; lastCoastScrollMs = millis(); }
-  renderCoastFrame();
-}
-void drawCoastalPanel() {
-  const int W = tft.width();
-  tft.fillRect(0, 95, W, 147 - 95, COL_BG);
-  tft.drawFastHLine(0, 95, W, COL_BORDER);
-  tft.setTextFont(1);
-  tft.setTextColor(COL_DIM, COL_BG);
-  tft.setTextDatum(TL_DATUM);
-  tft.drawString("COASTAL (NOAA)", 10, 104);
-  drawWaveIcon(W - 16, 107, COL_CYAN);
-  setupCoastalMarquee();          // Font-2 scrolling line at COAST_Y
-}
-
-// ============================================================
-//  DISPLAY — WIND / PRESSURE  (283..307, the strip between MARINE and the
-//  footer that was previously unused padding). Comes from the same live
-//  station observation as the hero temp/humidity -- no extra API cost.
+//  DISPLAY — WIND / PRESSURE  (231..255, the strip between MARINE and the
+//  BATTERY panel). Comes from the same live station observation as the
+//  hero temp/humidity -- no extra API cost.
 // ============================================================
 static const char* compassDir(float deg) {
   if (isnan(deg)) return "--";
@@ -755,19 +732,72 @@ static const char* compassDir(float deg) {
 }
 void drawWindPressure() {
   const int W = tft.width();
-  tft.fillRect(0, 283, W, 308 - 283, COL_BG);
+  tft.fillRect(0, 231, W, 256 - 231, COL_BG);
   tft.setTextFont(2);
   tft.setTextDatum(MC_DATUM);
   if (!wx.valid || isnan(wx.windMph) || isnan(wx.pressureInHg)) {
     tft.setTextColor(COL_DIM, COL_BG);
-    tft.drawString("Wind/pressure unavailable", W / 2, 295);
+    tft.drawString("Wind/pressure unavailable", W / 2, 243);
   } else {
     tft.setTextColor(COL_TEXT, COL_BG);
     String line = String(compassDir(wx.windDeg)) + " " + String((int)lroundf(wx.windMph))
                 + " mph   |   " + String(wx.pressureInHg, 2) + " inHg";
-    tft.drawString(line, W / 2, 295);
+    tft.drawString(line, W / 2, 243);
   }
   tft.setTextDatum(TL_DATUM);
+}
+
+// ============================================================
+//  DISPLAY — BATTERY  (border 256, body 257..307) — just above the footer.
+//  Reads the Freenove FNK0104AB's on-board battery sense (GPIO9, 0.5x
+//  divider) -- see fetchBattery(). No "Charging" state: this board has no
+//  charge-status pin, and a voltage-trend guess proved unreliable under
+//  load. Only "Fully charged" is shown, since that's a real threshold.
+// ============================================================
+static uint16_t batteryColor(int percent) {
+  if (percent > 60) return COL_GREEN;
+  if (percent > 20) return COL_WARN;
+  return COL_RED;
+}
+// Compact battery glyph (outline + nub + proportional fill) -- small by
+// design so it reads as an icon, not a headline meter.
+static void drawBatteryIcon(int x, int y, int w, int h, int percent, uint16_t fillColor) {
+  const int nubW = 3, nubH = h / 2;
+  tft.drawRoundRect(x, y, w, h, 2, COL_BORDER);
+  tft.fillRect(x + w, y + (h - nubH) / 2, nubW, nubH, COL_BORDER);
+  tft.fillRect(x + 2, y + 2, w - 4, h - 4, COL_BG);
+  int fillW = (w - 4) * percent / 100;
+  if (fillW > 0) tft.fillRect(x + 2, y + 2, fillW, h - 4, fillColor);
+}
+void drawBatteryPanel() {
+  const int W = tft.width();
+  tft.fillRect(0, 256, W, 308 - 256, COL_BG);
+  tft.drawFastHLine(0, 256, W, COL_BORDER);
+  tft.setTextFont(1);
+  tft.setTextColor(COL_DIM, COL_BG);
+  tft.setTextDatum(TL_DATUM);
+  tft.drawString("BATTERY", 10, 262);
+
+  if (!batt.valid) {
+    tft.setTextColor(COL_DIM, COL_BG);
+    tft.setTextDatum(TR_DATUM);
+    tft.drawString("No battery", W - 10, 262);
+    drawBatteryIcon(W - 34, 257, 24, 12, 0, COL_DIM);
+    return;
+  }
+
+  uint16_t col = batt.full ? COL_GREEN : batteryColor(batt.percent);
+  drawBatteryIcon(W - 34, 257, 24, 12, batt.percent, col);
+
+  tft.setTextFont(2);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(col, COL_BG);
+  tft.drawString(String(batt.voltage, 2) + "V  " + String(batt.percent) + "%", 10, 282);
+
+  String status = batt.full ? "Fully charged" : "";
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextColor(COL_GREEN, COL_BG);
+  tft.drawString(status, W - 10, 282);
 }
 
 void drawFooter() {
@@ -787,10 +817,10 @@ void drawFooter() {
 void drawMainScreen() {
   tft.fillScreen(COL_BG);
   drawWeatherPanel();
-  drawCoastalPanel();
   drawTidesPanel();
   drawMarinePanel();
   drawWindPressure();
+  drawBatteryPanel();
   drawFooter();
   needsFullRedraw = false;
 }
@@ -830,15 +860,14 @@ static bool resolveForecastUrl() {
   filter["properties"]["forecast"] = true;
   JsonDocument doc;
   String pointsUrl = "https://api.weather.gov/points/" + wxLat + "," + wxLon;
-  if (!httpsGetJson(pointsUrl.c_str(),
-                    doc, &filter, "application/geo+json"))
+  if (!httpsGetJson(pointsUrl, doc, &filter, "application/geo+json"))
     return false;
   forecastUrl = doc["properties"]["forecast"].as<String>();
   Serial.printf("[NWS] forecast URL: %s\n", forecastUrl.c_str());
   return forecastUrl.length() > 0;
 }
-// Live current temp/humidity/wind/pressure from the nearest ASOS station
-// (WX_STATION) -- one HTTPS call covers all four, no extra API cost for
+// Live current temp/humidity/wind/pressure from the configured ASOS station
+// (wxStation) -- one HTTPS call covers all four, no extra API cost for
 // wind + pressure beyond what temp/humidity already needed.
 static bool fetchObservation() {
   JsonDocument filter;
@@ -850,8 +879,7 @@ static bool fetchObservation() {
 
   JsonDocument doc;
   String stationUrl = "https://api.weather.gov/stations/" + wxStation + "/observations/latest";
-  if (!httpsGetJson(stationUrl.c_str(),
-                    doc, &filter, "application/geo+json"))
+  if (!httpsGetJson(stationUrl, doc, &filter, "application/geo+json"))
     return false;
 
   JsonObject p = doc["properties"];
@@ -918,7 +946,7 @@ bool fetchTides() {
 
   String url = String(
       "https://api.tidesandcurrents.noaa.gov/api/prod/datagetter?"
-      "product=predictions&application=weatherdisplay&datum=MLLW&station=")
+      "product=predictions&application=coastalweather&datum=MLLW&station=")
     + tideStation
     + "&time_zone=lst_ldt&units=english&interval=hilo&format=json&begin_date="
     + beginDate + "&range=48";
@@ -962,8 +990,7 @@ bool fetchMarine() {
   f["properties"]["headline"] = true;
 
   JsonDocument doc;
-  String marineUrl = "https://api.weather.gov/alerts/active/zone/" + marineZone;
-  if (!httpsGetJson(marineUrl.c_str(),
+  if (!httpsGetJson("https://api.weather.gov/alerts/active/zone/" MARINE_ZONE,
                     doc, &filter, "application/geo+json"))
     return false;
 
@@ -1001,8 +1028,7 @@ bool fetchRipCurrent() {
   f["properties"]["headline"] = true;
 
   JsonDocument doc;
-  String ripUrl = "https://api.weather.gov/alerts/active/zone/" + ripZone;
-  if (!httpsGetJson(ripUrl.c_str(),
+  if (!httpsGetJson("https://api.weather.gov/alerts/active/zone/" RIP_ZONE,
                     doc, &filter, "application/geo+json"))
     return false;
 
@@ -1029,151 +1055,42 @@ bool fetchRipCurrent() {
 }
 
 // ============================================================
-//  COASTAL WATERS FORECAST — NOAA/NWS text bulletin (product CWF, office MHX)
-//  The bulletin covers EVERY marine zone for the office (~25KB of escaped
-//  JSON text) -- too large to hold in RAM alongside WiFi/TLS/webserver on
-//  this device, so we scan the raw HTTPS response byte-by-byte and only
-//  ever keep a few hundred bytes: our zone's header + first forecast
-//  period (e.g. ".TONIGHT...NW winds 10 to 15 kt. Seas 2 to 4 ft...").
+//  BATTERY — Freenove FNK0104AB on-board sense (GPIO9, 0.5x resistive
+//  divider). Local ADC read, no WiFi/HTTP involved.
 // ============================================================
-#define COASTAL_CAPTURE_MAX 700
-
-static int readByteBlocking(Stream& s, unsigned long deadline) {
-  while (millis() < deadline) {
-    if (s.available()) return s.read();
-    delay(1);
-  }
-  return -1;
-}
-
-// Slices the (small, already-zone-scoped) capture buffer down to just the
-// first forecast period: name (e.g. "TONIGHT") + body text.
-static bool extractCoastalPeriod(const String& text, String& periodOut, String& bodyOut) {
-  int p1 = text.indexOf("\n.");                   // start of the first period marker
-  if (p1 < 0) return false;
-  int p2 = text.indexOf("\n.", p1 + 1);           // start of the second period marker
-  if (p2 < 0) p2 = text.indexOf("\n\n", p1 + 1);  // fallback: blank line after last period
-  if (p2 < 0) p2 = min((int)text.length(), p1 + 400);
-
-  String seg = text.substring(p1 + 1, p2);        // e.g. ".TONIGHT...NW winds..."
-  int dots = seg.indexOf("...", 1);
-  if (dots < 0) return false;
-  periodOut = seg.substring(1, dots);
-  bodyOut   = seg.substring(dots + 3);
-  bodyOut.replace("\n", " ");
-  while (bodyOut.indexOf("  ") >= 0) bodyOut.replace("  ", " ");
-  bodyOut.trim();
-  periodOut.trim();
-  return true;
-}
-
-// Scans the still-open HTTP response stream for `"productText":"`, then
-// JSON-unescapes bytes one at a time looking for our zone's UGC header
-// (e.g. "AMZ158-"); once found, captures that zone's segment (bounded by
-// COASTAL_CAPTURE_MAX) instead of the whole multi-zone bulletin.
-static bool streamCoastalZone(Stream& s, String& capture) {
-  unsigned long deadline = millis() + 9000;
-
-  const char* KEY = "\"productText\"";
-  size_t klen = strlen(KEY), kmatch = 0;
-  int c;
-  while ((c = readByteBlocking(s, deadline)) >= 0) {
-    kmatch = ((char)c == KEY[kmatch]) ? kmatch + 1 : ((char)c == KEY[0] ? 1 : 0);
-    if (kmatch == klen) break;
-  }
-  if (kmatch != klen) return false;
-  // Skip ':' and any whitespace up to the value's opening quote (JSON
-  // formatting between key and value is not guaranteed byte-for-byte —
-  // this API pretty-prints with a space: `"productText": "`).
-  do {
-    c = readByteBlocking(s, deadline);
-    if (c < 0) return false;
-  } while (c != '"');
-
-  String zonePrefix = coastalZone + "-";
-  size_t zlen = zonePrefix.length(), zmatch = 0;
-  bool capturing = false;
-  char prev = 0;
-  int boundaries = 0;
-
-  while ((c = readByteBlocking(s, deadline)) >= 0) {
-    char ch;
-    if (c == '\\') {
-      int esc = readByteBlocking(s, deadline);
-      if (esc < 0) break;
-      switch (esc) {
-        case 'n':  ch = '\n'; break;
-        case 't':  ch = '\t'; break;
-        case 'r':  ch = '\r'; break;
-        case '"':  ch = '"';  break;
-        case '\\': ch = '\\'; break;
-        default:   ch = (char)esc; break;
-      }
-    } else if (c == '"') {
-      break;                       // unescaped quote: end of the JSON string
-    } else {
-      ch = (char)c;
+// Single-cell Li-ion discharge curve (rough, unloaded-voltage estimate).
+static int batteryPercent(float v) {
+  static const struct { float v; int p; } CURVE[] = {
+    {4.20f, 100}, {4.06f, 90}, {3.98f, 80}, {3.92f, 70}, {3.87f, 60},
+    {3.82f, 50},  {3.79f, 40}, {3.77f, 30}, {3.74f, 20}, {3.68f, 10}, {3.45f, 0},
+  };
+  const int n = sizeof(CURVE) / sizeof(CURVE[0]);
+  if (v >= CURVE[0].v) return 100;
+  if (v <= CURVE[n - 1].v) return 0;
+  for (int i = 0; i < n - 1; i++) {
+    if (v <= CURVE[i].v && v >= CURVE[i + 1].v) {
+      float t = (v - CURVE[i + 1].v) / (CURVE[i].v - CURVE[i + 1].v);
+      return CURVE[i + 1].p + (int)lroundf(t * (CURVE[i].p - CURVE[i + 1].p));
     }
-
-    if (!capturing) {
-      zmatch = (ch == zonePrefix[zmatch]) ? zmatch + 1 : (ch == zonePrefix[0] ? 1 : 0);
-      if (zmatch == zlen) { capturing = true; capture = zonePrefix; }
-      continue;
-    }
-    capture += ch;
-    if (prev == '\n' && ch == '.' && ++boundaries >= 2) break;
-    prev = ch;
-    if (capture.length() >= COASTAL_CAPTURE_MAX) break;
   }
-  return capturing;
+  return 0;
 }
-
-bool fetchCoastalForecast() {
-  if (!WiFi.isConnected()) return false;
-
-  // Step 1: look up the most recently issued CWF bulletin for this office.
-  JsonDocument listFilter;
-  JsonObject g = listFilter["@graph"].add<JsonObject>();
-  g["@id"] = true;
-  JsonDocument listDoc;
-  String coastalUrl = "https://api.weather.gov/products/types/CWF/locations/" + coastalOffice;
-  if (!httpsGetJson(coastalUrl.c_str(),
-                    listDoc, &listFilter, "application/ld+json"))
-    return false;
-  JsonArray graph = listDoc["@graph"].as<JsonArray>();
-  if (graph.isNull() || graph.size() == 0) return false;
-  String productUrl = graph[0]["@id"].as<String>();
-  if (productUrl.isEmpty()) return false;
-  listDoc.clear();
-
-  // Step 2: stream-scan the bulletin for our zone; never buffer the whole
-  // ~25KB document (every marine zone for the office is in that one file).
-  WiFiClientSecure client;
-  client.setInsecure();
-  HTTPClient http;
-  http.setConnectTimeout(6000);
-  http.setTimeout(9000);
-  if (!http.begin(client, productUrl)) return false;
-  http.addHeader("User-Agent", NWS_USER_AGENT);
-  http.addHeader("Accept", "application/ld+json");
-  int code = http.GET();
-  if (code != HTTP_CODE_OK) {
-    Serial.printf("[Coastal] HTTP %d\n", code);
-    http.end();
-    return false;
-  }
-
-  String capture;
-  bool found = streamCoastalZone(http.getStream(), capture);
-  http.end();
-  if (!found) { Serial.println("[Coastal] zone not found in bulletin"); return false; }
-
-  String period, body;
-  if (!extractCoastalPeriod(capture, period, body)) return false;
-  coastal.period = period;
-  coastal.text   = body;
-  coastal.valid  = true;
-  Serial.printf("[Coastal] %s: %s\n", period.c_str(), body.c_str());
+static float readBatteryVoltage() {
+  const int SAMPLES = 32;               // oversample -- cuts ADC/WiFi noise
+  uint32_t sumMv = 0;
+  for (int i = 0; i < SAMPLES; i++) sumMv += analogReadMilliVolts(BAT_ADC_PIN);
+  return (sumMv / (float)SAMPLES) * 2.0f / 1000.0f;
+}
+bool fetchBattery() {
+  float v = readBatteryVoltage();
+  batt.voltage = v;
+  // Below ~3.0V: no battery attached (pin floating / USB-only power).
+  if (v < 3.0f) { batt.valid = false; batt.percent = 0; batt.full = false; return false; }
+  batt.valid   = true;
+  batt.full    = v >= 4.15f;              // top of the curve / CV taper region
+  // Once "full", show 100% rather than the curve's interpolated value --
+  // otherwise "Fully charged" could read alongside a contradictory 97%.
+  batt.percent = batt.full ? 100 : batteryPercent(v);
   return true;
 }
 
@@ -1187,7 +1104,12 @@ String buildStatusJson() {
   doc["device"]   = deviceName;
   doc["mdns"]     = sanitizeMDNS(deviceName);
   doc["uptime"]   = (nowMs - bootMillis) / 1000UL;
-  doc["place"]    = wxPlace;
+  doc["place"]       = wxPlace;
+  doc["lat"]         = wxLat;
+  doc["lon"]         = wxLon;
+  doc["wxStation"]   = wxStation;
+  doc["tideStation"] = tideStation;
+  doc["tidePlace"]   = tidePlace;
 
   doc["wxValid"] = wx.valid;
   if (!isnan(wx.tempF))    doc["wxTempF"]    = wx.tempF;
@@ -1229,10 +1151,11 @@ String buildStatusJson() {
     doc["ripHeadline"] = rip.headline;
   }
 
-  doc["coastalValid"] = coastal.valid;
-  if (coastal.valid) {
-    doc["coastalPeriod"] = coastal.period;
-    doc["coastalText"]   = coastal.text;
+  doc["battValid"] = batt.valid;
+  if (batt.valid) {
+    doc["battVoltage"] = batt.voltage;
+    doc["battPercent"] = batt.percent;
+    doc["battFull"]    = batt.full;
   }
 
   float mp = moonPhase();
@@ -1292,6 +1215,30 @@ void handleWiFiChange() {
   delay(800);
   ESP.restart();
 }
+void handleLocationChange() {
+  if (!server.hasArg("lat") || !server.hasArg("lon") ||
+      !server.hasArg("wxStation") || !server.hasArg("tideStation") ||
+      server.arg("lat").isEmpty() || server.arg("lon").isEmpty() ||
+      server.arg("wxStation").isEmpty() || server.arg("tideStation").isEmpty()) {
+    server.send(400, "application/json",
+                "{\"error\":\"Latitude, longitude, weather station, and tide station are required\"}");
+    return;
+  }
+  String lat = server.arg("lat"); lat.trim();
+  String lon = server.arg("lon"); lon.trim();
+  String place = server.hasArg("place") ? server.arg("place") : "";
+  place.trim();
+  if (place.isEmpty()) place = lat + ", " + lon;
+  String wxSta = server.arg("wxStation"); wxSta.trim(); wxSta.toUpperCase();
+  String tideSta = server.arg("tideStation"); tideSta.trim();
+  String tidePl = server.hasArg("tidePlace") ? server.arg("tidePlace") : "";
+  tidePl.trim();
+  if (tidePl.isEmpty()) tidePl = tideSta;
+  saveLocationConfig(lat, lon, place, wxSta, tideSta, tidePl);
+  server.send(200, "application/json", "{\"ok\":true}");
+  delay(800);
+  ESP.restart();
+}
 void handleWiFiScanStart() {
   WiFi.scanNetworks(true);
   server.send(200, "application/json", "{\"ok\":true,\"status\":\"scanning\"}");
@@ -1325,22 +1272,43 @@ void handleRoot() {
   server.send(200, "text/html", R"DASH(
 <!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weather Display</title>
+<title>CoastalWeather</title>
 <style>
-:root{--bg:#0d0f1a;--card:#151724;--bdr:#252840;--acc:#4f8ef7;
- --grn:#3ecf8e;--red:#f76e6e;--warn:#f7b84f;--dim:#8892a4;--txt:#dde3f0;--cya:#4fcfef;}
+:root{--bg:#0d0f1a;--card:#1a1e33;--bdr:#252840;--bdr2:#363c66;--acc:#4f8ef7;
+ --grn:#3ecf8e;--red:#f76e6e;--warn:#f7b84f;--dim:#8892a4;--txt:#dde3f0;--cya:#4fcfef;--sun:#ffd140;}
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:var(--bg);color:var(--txt);font-family:'Segoe UI',Arial,sans-serif;
  padding:1rem;max-width:560px;margin:auto}
-h1{text-align:center;color:var(--acc);font-size:1.3rem;margin:.8rem 0 .3rem}
-.card{background:var(--card);border:1px solid var(--bdr);border-radius:14px;
- padding:1.2rem 1.4rem;margin-bottom:1rem}
-.card h2{font-size:.78rem;text-transform:uppercase;letter-spacing:.1em;
- color:var(--dim);margin-bottom:.9rem}
+h1{text-align:center;color:var(--acc);font-size:1.3rem;font-weight:700;margin:.4rem 0 1rem}
+.panel{background:var(--card);border:1px solid var(--bdr2);border-radius:14px;
+ padding:1.1rem 1.3rem;margin-bottom:1rem;box-shadow:0 2px 10px rgba(0,0,0,.35)}
+.panel h2{display:flex;justify-content:space-between;align-items:center;
+ font-size:.75rem;text-transform:uppercase;letter-spacing:.12em;
+ color:var(--dim);margin-bottom:.8rem;padding-bottom:.6rem;border-bottom:1px solid var(--bdr)}
+.panel h2 b{color:var(--txt);font-weight:600;text-transform:none;letter-spacing:0}
+.panel h2 i{color:var(--dim);font-weight:400;text-transform:none;letter-spacing:0;font-size:.82rem;font-style:normal}
+.panel h2 .hdr-right{display:flex;align-items:center;gap:.4rem}
+.panel h2 .tides-label{color:var(--cya)}
+.hdr-icon{display:inline-flex;width:20px;height:20px;flex:none}
+.hero{display:flex;align-items:center;justify-content:center;gap:1rem;padding:.3rem 0 .6rem}
+.wx-icon{width:44px;height:44px;flex:none}
+.hero .num{font-size:2.5rem;font-weight:300;color:var(--txt)}
+.hero .num sup{font-size:1.1rem;font-weight:400;margin-left:.1rem}
+.hero .hum{font-size:2.5rem;font-weight:300;color:var(--cya)}
+.hero .hum sup{font-size:1.1rem;font-weight:400;margin-left:.1rem}
+.cond{text-align:center;color:var(--sun);font-size:.88rem;margin-bottom:.5rem;min-height:1.1em}
 .row{display:flex;justify-content:space-between;align-items:center;
  padding:.35rem 0;border-bottom:1px solid var(--bdr);font-size:.9rem}
 .row:last-child{border-bottom:none}
 .lbl{color:var(--dim);font-size:.88rem}.val{font-weight:600;font-size:.92rem}
+.tide-row{display:grid;grid-template-columns:3.2rem 1fr auto;align-items:center;
+ padding:.4rem 0;border-bottom:1px solid var(--bdr);font-size:.92rem}
+.tide-row:last-child{border-bottom:none}
+.tide-row .t-hi{color:var(--cya);font-weight:600}
+.tide-row .t-lo{color:var(--warn);font-weight:600}
+.tide-row .t-time{text-align:center;color:var(--txt)}
+.tide-row .t-ht{text-align:right;color:var(--txt);font-weight:600}
+.status-dim{color:var(--dim)}.status-ok{color:var(--grn)}.status-warn{color:var(--warn)}
 .btn-row{display:flex;gap:.6rem;flex-wrap:wrap;margin-top:.85rem}
 button{padding:.5rem .95rem;border:none;border-radius:8px;font-size:.86rem;
  font-weight:600;cursor:pointer;transition:opacity .15s}
@@ -1352,6 +1320,9 @@ input[type=text],input[type=password]{flex:1;padding:.5rem .8rem;
  background:#1e2535;border:1px solid var(--bdr);border-radius:8px;
  color:var(--txt);font-size:.9rem;outline:none}
 input:focus{border-color:var(--acc)}
+select{width:100%;padding:.5rem .8rem;background:#1e2535;border:1px solid var(--bdr);
+ border-radius:8px;color:var(--txt);font-size:.9rem;outline:none;margin-top:.5rem}
+select:focus{border-color:var(--acc)}
 .ota-link{display:block;text-align:center;color:var(--acc);text-decoration:none;
  font-size:.92rem;font-weight:600;padding:.4rem 0}
 .net-list{margin-top:.7rem;max-height:180px;overflow-y:auto}
@@ -1360,43 +1331,97 @@ input:focus{border-color:var(--acc)}
 .net-item:hover{background:var(--bdr)}
 .lock{font-size:.72rem;margin-left:.3rem;color:var(--warn)}
 #scanStatus{font-size:.82rem;color:var(--dim);margin:.4rem 0;text-align:center}
+.footer-bar{display:flex;justify-content:space-between;border-top:1px solid var(--bdr);
+ padding-top:.5rem;margin-top:.3rem;font-size:.72rem;color:var(--dim)}
 #upd{text-align:center;font-size:.73rem;color:var(--dim);margin-top:.4rem}
 </style></head><body>
-<h1 id="hTitle">Weather Display</h1>
+<h1 id="hTitle">CoastalWeather</h1>
 
-<div class="card">
-  <h2>Weather <span id="wxPlace" style="color:var(--txt);text-transform:none;letter-spacing:0"></span></h2>
-  <div class="row"><span class="lbl">Condition</span><span class="val" id="wxCond">--</span></div>
-  <div class="row"><span class="lbl">Current temp</span><span class="val" id="wxTemp">--</span></div>
-  <div class="row"><span class="lbl">Current humidity</span><span class="val" id="wxHum">--</span></div>
-  <div class="row"><span class="lbl">Wind</span><span class="val" id="wxWind">--</span></div>
-  <div class="row"><span class="lbl">Pressure</span><span class="val" id="wxPress">--</span></div>
+<div class="panel">
+  <h2><span>Weather</span><b id="wxPlace"></b></h2>
+  <div class="hero">
+    <span class="wx-icon" id="wxIcon"></span>
+    <span class="num" id="wxTemp">--<sup>°F</sup></span>
+    <span class="hum" id="wxHum">--<sup>%</sup></span>
+  </div>
+  <div class="cond" id="wxCond">--</div>
+  <div class="row"><span class="lbl">Wind / Pressure</span><span class="val" id="wxWindPress">--</span></div>
   <div class="row"><span class="lbl">Updated</span><span class="val" id="wxAge">--</span></div>
   <div class="btn-row"><button class="b-dim" onclick="refreshAll()">Refresh now</button></div>
 </div>
 
-<div class="card">
-  <h2>Tides — Hampstead</h2>
-  <div id="tideRows"><div class="row"><span class="lbl">--</span><span class="val"></span></div></div>
-  <div class="row"><span class="lbl">Moon phase</span><span class="val" id="moon">--</span></div>
+<div class="panel">
+  <h2><span class="tides-label">Tides</span><b id="tidePlace"></b></h2>
+  <div id="tideRows"><div class="tide-row"><span class="t-lo">--</span><span class="t-time"></span><span class="t-ht"></span></div></div>
+  <div class="row"><span class="lbl">Moon phase</span><span class="val"><span class="hdr-icon" id="moonIcon" style="margin-right:.4rem"></span><span id="moon">--</span></span></div>
 </div>
 
-<div class="card">
-  <h2>Hazards — Marine / Rip Current</h2>
+<div class="panel">
+  <h2><span>Hazards</span><span class="hdr-right"><span class="hdr-icon" id="boatIcon"></span><i>Marine / Rip Current</i></span></h2>
   <div class="row"><span class="lbl">Small craft</span><span class="val" id="marStatus">--</span></div>
   <div class="row"><span class="lbl">Details</span><span class="val" id="marHead" style="text-align:right;max-width:62%">--</span></div>
   <div class="row"><span class="lbl">Rip current</span><span class="val" id="ripStatus">--</span></div>
   <div class="row"><span class="lbl">Details</span><span class="val" id="ripHead" style="text-align:right;max-width:62%">--</span></div>
 </div>
 
-<div class="card">
-  <h2>Coastal Waters Forecast — NOAA</h2>
-  <div class="row"><span class="lbl">Period</span><span class="val" id="coastPeriod">--</span></div>
-  <div class="row"><span class="lbl">Forecast</span><span class="val" id="coastText" style="text-align:right;max-width:62%">--</span></div>
+<div class="panel">
+  <h2><span>Battery</span><span class="hdr-right"><span class="hdr-icon" id="battIcon"></span></span></h2>
+  <div class="row"><span class="lbl">Voltage</span><span class="val" id="battVoltage">--</span></div>
+  <div class="row"><span class="lbl">Charge</span><span class="val" id="battPercent">--</span></div>
+  <div class="row"><span class="lbl">Status</span><span class="val" id="battStatus">--</span></div>
 </div>
 
-<div class="card">
-  <h2>Network</h2>
+<div class="panel">
+  <h2><span>Change Location / Stations</span></h2>
+
+  <h2 style="margin-top:0">Find by City</h2>
+  <div class="irow">
+    <input type="text" id="citySearch" placeholder="City name, e.g. Wilmington, NC">
+    <button class="b-dim" onclick="findCity()">Search</button>
+  </div>
+  <div id="citySearchStatus" style="font-size:.82rem;color:var(--dim);margin:.4rem 0"></div>
+  <select id="cityResults" style="display:none" onchange="selectCity()"></select>
+
+  <div class="irow">
+    <input type="text" id="locLat" placeholder="Latitude, e.g. 34.3671">
+    <input type="text" id="locLon" placeholder="Longitude, e.g. -77.7108">
+  </div>
+  <div class="irow">
+    <input type="text" id="locPlace" placeholder="Place name, e.g. Hampstead, NC">
+  </div>
+
+  <h2 style="margin-top:1.1rem">Weather Station</h2>
+  <button class="b-dim" style="width:100%" onclick="findWxStations()">Find nearest weather stations</button>
+  <div id="wxSearchStatus" style="font-size:.82rem;color:var(--dim);margin:.4rem 0;text-align:center"></div>
+  <select id="wxStationList" style="display:none;margin-bottom:.7rem" onchange="selectWxStation()"></select>
+  <div class="irow" style="margin-top:0">
+    <input type="text" id="locWxSta" placeholder="Weather station, e.g. KILM">
+  </div>
+  <p style="font-size:.78rem;color:var(--dim);margin:.2rem 0 0">
+    Or find the ASOS code manually at <a href="https://www.weather.gov/" target="_blank" style="color:var(--acc)">weather.gov</a>
+    (search your city, the current-conditions station code is shown on the forecast page).
+  </p>
+
+  <h2 style="margin-top:1.1rem">Tide Station</h2>
+  <button class="b-dim" style="width:100%" onclick="findTideStations()">Find nearest tide stations</button>
+  <div id="tideSearchStatus" style="font-size:.82rem;color:var(--dim);margin:.4rem 0;text-align:center"></div>
+  <select id="tideStationList" style="display:none;margin-bottom:.7rem" onchange="selectTideStation()"></select>
+  <div class="irow" style="margin-top:0">
+    <input type="text" id="locTideSta" placeholder="Tide station #, e.g. 8657813">
+    <input type="text" id="locTidePlace" placeholder="Tide station name, e.g. Hampstead">
+  </div>
+  <div class="btn-row">
+    <button class="b-blue" onclick="changeLocation()">Save &amp; Reboot</button>
+  </div>
+  <p style="font-size:.78rem;color:var(--dim);margin-top:.6rem">
+    City, weather station, and tide station lookups query Open-Meteo / NWS / NOAA
+    directly from your browser using the coordinates above. Marine/rip
+    hazard zones are not affected by this change.
+  </p>
+</div>
+
+<div class="panel">
+  <h2><span>Network</span></h2>
   <div class="row"><span class="lbl">SSID</span><span class="val" id="ssid">--</span></div>
   <div class="row"><span class="lbl">IP address</span><span class="val" id="ip">--</span></div>
   <div class="row"><span class="lbl">MAC address</span><span class="val" id="mac">--</span></div>
@@ -1423,11 +1448,15 @@ input:focus{border-color:var(--acc)}
   </div>
 </div>
 
-<div class="card">
-  <h2>Firmware <span id="fwVer" style="font-weight:600;color:var(--txt)"></span></h2>
+<div class="panel">
+  <h2><span>Firmware</span><b id="fwVer"></b></h2>
   <a class="ota-link" href="/update">Open OTA update page &#x2197;</a>
 </div>
 
+<div class="footer-bar">
+  <span id="footIp">--</span>
+  <span id="footVer">--</span>
+</div>
 <div id="upd">Connecting...</div>
 <script>
 var $=function(id){return document.getElementById(id);};
@@ -1437,34 +1466,134 @@ function toast(m,ms){ms=ms||2500;var d=document.createElement('div');d.textConte
  +'font-size:.86rem;z-index:9999;box-shadow:0 2px 12px rgba(0,0,0,.4);transition:opacity .4s';
  document.body.appendChild(d);setTimeout(function(){d.style.opacity='0';
  setTimeout(function(){d.remove();},500);},ms);}
+function svgCloud(cx,cy,w,color){
+ var r=w/4;
+ return '<circle cx="'+(cx-r)+'" cy="'+cy+'" r="'+r+'" fill="'+color+'"/>'
+  +'<circle cx="'+(cx+r)+'" cy="'+cy+'" r="'+r+'" fill="'+color+'"/>'
+  +'<circle cx="'+cx+'" cy="'+(cy-r*0.75)+'" r="'+(r*1.2)+'" fill="'+color+'"/>'
+  +'<rect x="'+(cx-r)+'" y="'+cy+'" width="'+(2*r)+'" height="'+(r+2)+'" fill="'+color+'"/>';
+}
+function wxIconSVG(cond,isDay){
+ var t=(cond||'').toLowerCase(),cat='cloudy';
+ if(t.indexOf('thunder')>=0) cat='tstorm';
+ else if(/snow|sleet|flurr|ice|blizzard/.test(t)) cat='snow';
+ else if(/rain|shower|drizzle/.test(t)) cat='rain';
+ else if(/fog|haze|smoke|mist/.test(t)) cat='fog';
+ else if(t.indexOf('cloud')>=0) cat=t.indexOf('partly')>=0?'partly':'cloudy';
+ else if(/partly|mostly sunny|mostly clear/.test(t)) cat='partly';
+ else if(/sunny|clear|fair/.test(t)) cat='clear';
+ var S=44,cx=22,cy=22,body='';
+ var sun='<circle cx="'+cx+'" cy="'+cy+'" r="10" fill="#ffd140"/>'
+  +[0,45,90,135,180,225,270,315].map(function(a){
+   var rad=a*Math.PI/180,x1=cx+Math.cos(rad)*14,y1=cy+Math.sin(rad)*14,
+    x2=cx+Math.cos(rad)*20,y2=cy+Math.sin(rad)*20;
+   return '<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'" stroke="#ffd140" stroke-width="2"/>';
+  }).join('');
+ var moon='<circle cx="'+cx+'" cy="'+cy+'" r="10" fill="#eaeef7"/>'
+  +'<circle cx="'+(cx-3)+'" cy="'+(cy-2)+'" r="2" fill="#bcc4d4"/>'
+  +'<circle cx="'+(cx+3)+'" cy="'+(cy+3)+'" r="2.5" fill="#bcc4d4"/>';
+ switch(cat){
+  case 'clear': body=isDay?sun:moon; break;
+  case 'partly':
+   body=(isDay?'<circle cx="'+(cx-6)+'" cy="'+(cy-5)+'" r="6" fill="#ffd140"/>'
+              :'<circle cx="'+(cx-6)+'" cy="'+(cy-5)+'" r="6" fill="#eaeef7"/>')
+    +svgCloud(cx+3,cy+4,26,'#c6ced4');
+   break;
+  case 'cloudy': body=svgCloud(cx,cy,30,'#c6ced4'); break;
+  case 'rain': body=svgCloud(cx,cy-3,28,'#6b7488')
+    +[-8,0,8].map(function(dx){return '<line x1="'+(cx+dx+2)+'" y1="'+(cy+9)+'" x2="'+(cx+dx-2)+'" y2="'+(cy+18)+'" stroke="#5a9ef7" stroke-width="2"/>';}).join('');
+   break;
+  case 'tstorm': body=svgCloud(cx,cy-3,28,'#6b7488')
+    +'<polygon points="'+(cx+3)+','+(cy+3)+' '+(cx-6)+','+(cy+16)+' '+(cx-1)+','+(cy+16)+' '+(cx-4)+','+(cy+24)+' '+(cx+7)+','+(cy+13)+' '+(cx+2)+','+(cy+13)+'" fill="#ffd140"/>';
+   break;
+  case 'snow': body=svgCloud(cx,cy-3,28,'#c6ced4')
+    +[-8,0,8].map(function(dx){return '<circle cx="'+(cx+dx)+'" cy="'+(cy+13+(dx===0?4:0))+'" r="2" fill="#fff"/>';}).join('');
+   break;
+  case 'fog': body=svgCloud(cx,cy-4,26,'#c6ced4')
+    +[0,1,2].map(function(i){return '<line x1="'+(cx-14+(i%2)*4)+'" y1="'+(cy+8+i*5)+'" x2="'+(cx+14+(i%2)*4)+'" y2="'+(cy+8+i*5)+'" stroke="#c6ced4" stroke-width="2"/>';}).join('');
+   break;
+  default: body=svgCloud(cx,cy,30,'#c6ced4');
+ }
+ return '<svg width="'+S+'" height="'+S+'" viewBox="0 0 '+S+' '+S+'">'+body+'</svg>';
+}
+function moonIconSVG(illumPct,waxing){
+ var S=20,r=8.5,cx=10,cy=10;
+ var k=Math.max(0,Math.min(1,(illumPct||0)/100));
+ var signedRx=r*(1-2*k),rx=Math.abs(signedRx);
+ var outerSweep=waxing?1:0;
+ var termSweep=signedRx>=0?outerSweep:(outerSweep===1?0:1);
+ var d='M'+cx+','+(cy-r)+' A'+r+','+r+' 0 0,'+outerSweep+' '+cx+','+(cy+r)
+  +' A'+rx+','+r+' 0 0,'+termSweep+' '+cx+','+(cy-r)+' Z';
+ return '<svg width="'+S+'" height="'+S+'" viewBox="0 0 '+S+' '+S+'">'
+  +'<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="#252840"/>'
+  +(k>0.02?'<path d="'+d+'" fill="#eaeef7"/>':'')
+  +'<circle cx="'+cx+'" cy="'+cy+'" r="'+r+'" fill="none" stroke="#8892a4" stroke-width="1"/>'
+  +'</svg>';
+}
+function boatIconSVG(color){
+ return '<svg width="20" height="20" viewBox="0 0 20 20">'
+  +'<polygon points="10,2 10,11 17,11" fill="'+color+'"/>'
+  +'<line x1="10" y1="2" x2="10" y2="11" stroke="'+color+'" stroke-width="1.5"/>'
+  +'<rect x="1" y="11" width="18" height="2" fill="'+color+'"/>'
+  +'<line x1="1" y1="13" x2="5" y2="17" stroke="'+color+'" stroke-width="1.5"/>'
+  +'<line x1="19" y1="13" x2="15" y2="17" stroke="'+color+'" stroke-width="1.5"/>'
+  +'</svg>';
+}
+function batteryIconSVG(color,percent){
+ var w=16,h=9,nubW=2,nubH=4,fillW=Math.round((w-2)*(Math.max(0,Math.min(100,percent||0))/100));
+ return '<svg width="20" height="20" viewBox="0 0 20 20">'
+  +'<rect x="1" y="5.5" width="'+w+'" height="'+h+'" rx="1.5" fill="none" stroke="'+color+'" stroke-width="1.3"/>'
+  +'<rect x="'+(1+w)+'" y="'+(5.5+(h-nubH)/2)+'" width="'+nubW+'" height="'+nubH+'" fill="'+color+'"/>'
+  +(fillW>0?'<rect x="2" y="6.5" width="'+fillW+'" height="'+(h-2)+'" fill="'+color+'"/>':'')
+  +'</svg>';
+}
+var locInit=false;
 function update(){
  fetch('/status').then(function(r){return r.json();}).then(function(d){
-  $('hTitle').textContent=d.device||'Weather Display';
-  document.title=d.device||'Weather Display';
+  $('hTitle').textContent=d.device||'CoastalWeather';
+  document.title=d.device||'CoastalWeather';
   $('fwVer').textContent='v'+(d.firmware||'');
-  $('wxPlace').textContent=d.place?('— '+d.place):'';
+  $('wxPlace').textContent=d.place||'';
+  $('tidePlace').textContent=d.tidePlace||'';
+  if(!locInit){
+    $('locLat').value=d.lat||'';$('locLon').value=d.lon||'';
+    $('locPlace').value=d.place||'';
+    $('locWxSta').value=d.wxStation||'';$('locTideSta').value=d.tideStation||'';
+    $('locTidePlace').value=d.tidePlace||'';
+    locInit=true;
+  }
   $('wxCond').textContent=d.wxValid?(d.wxCondition||'--'):'Offline';
-  $('wxTemp').textContent=d.wxTempF!=null?Math.round(d.wxTempF)+'°F':'--';
-  $('wxHum').textContent=d.wxHumidity!=null?Math.round(d.wxHumidity)+'%':'--';
-  $('wxWind').textContent=d.wxWindMph!=null?(d.wxWindDir+' '+Math.round(d.wxWindMph)+' mph'):'--';
-  $('wxPress').textContent=d.wxPressureInHg!=null?(d.wxPressureInHg.toFixed(2)+' inHg'):'--';
+  $('wxIcon').innerHTML=wxIconSVG(d.wxCondition,d.wxIsDay!==false);
+  $('wxTemp').innerHTML=d.wxTempF!=null?Math.round(d.wxTempF)+'<sup>°F</sup>':'--';
+  $('wxHum').innerHTML=d.wxHumidity!=null?Math.round(d.wxHumidity)+'<sup>%</sup>':'--';
+  $('wxWindPress').textContent=(d.wxWindMph!=null?(d.wxWindDir+' '+Math.round(d.wxWindMph)+' mph'):'--')
+   +'   |   '+(d.wxPressureInHg!=null?(d.wxPressureInHg.toFixed(2)+' inHg'):'--');
   $('wxAge').textContent=d.wxAgoSec<0?'never':d.wxAgoSec+'s ago';
   var tr=$('tideRows');
   if(d.tideValid&&d.tides&&d.tides.length){
-    tr.innerHTML=d.tides.map(function(x){return '<div class="row"><span class="lbl">'
-     +(x.type==='H'?'High':'Low')+'</span><span class="val">'+x.time+' — '
-     +x.ht.toFixed(1)+' ft</span></div>';}).join('');
-  } else tr.innerHTML='<div class="row"><span class="lbl">Tides</span><span class="val">unavailable</span></div>';
+    tr.innerHTML=d.tides.map(function(x){var hi=x.type==='H';return '<div class="tide-row">'
+     +'<span class="'+(hi?'t-hi':'t-lo')+'">'+(hi?'High':'Low')+'</span>'
+     +'<span class="t-time">'+x.time+'</span>'
+     +'<span class="t-ht">'+x.ht.toFixed(1)+' ft</span></div>';}).join('');
+  } else tr.innerHTML='<div class="tide-row"><span class="t-lo">--</span><span class="t-time">Tides unavailable</span><span class="t-ht"></span></div>';
   $('moon').textContent=d.moonName?(d.moonName+' ('+(d.moonIllum!=null?d.moonIllum+'%':'')+')'):'--';
+  $('moonIcon').innerHTML=moonIconSVG(d.moonIllum,(d.moonName||'').indexOf('Waning')<0);
   $('marStatus').textContent=d.marineValid?(d.marineAdvisory?(d.marineEvent||'Advisory'):'None in effect'):'--';
+  $('marStatus').className='val '+(!d.marineValid?'status-dim':d.marineAdvisory?'status-warn':'status-ok');
   $('marHead').textContent=d.marineHeadline||'';
+  $('boatIcon').innerHTML=boatIconSVG(!d.marineValid||!d.ripValid?'#8892a4':(d.marineAdvisory||d.ripActive)?'#f7b84f':'#3ecf8e');
   $('ripStatus').textContent=d.ripValid?(d.ripActive?(d.ripEvent||'Advisory'):'None in effect'):'--';
+  $('ripStatus').className='val '+(!d.ripValid?'status-dim':d.ripActive?'status-warn':'status-ok');
   $('ripHead').textContent=d.ripHeadline||'';
-  $('coastPeriod').textContent=d.coastalValid?(d.coastalPeriod||'--'):'--';
-  $('coastText').textContent=d.coastalValid?(d.coastalText||''):'unavailable';
+  $('battVoltage').textContent=d.battValid?(d.battVoltage.toFixed(2)+'V'):'No battery';
+  $('battPercent').textContent=d.battValid?(d.battPercent+'%'):'--';
+  $('battStatus').textContent=!d.battValid?'--':(d.battFull?'Fully charged':'');
+  $('battIcon').innerHTML=batteryIconSVG(!d.battValid?'#8892a4':(d.battFull?'#3ecf8e':(d.battPercent>60?'#3ecf8e':d.battPercent>20?'#f7b84f':'#f76e6e')),d.battValid?d.battPercent:0);
   $('ssid').textContent=d.ssid;$('ip').textContent=d.ip;$('mac').textContent=d.mac;
   $('quality').textContent=d.quality+' ('+d.rssi+' dBm)';
   $('mdnsLabel').textContent=(d.mdns||'')+'.local';
+  $('footIp').textContent=(d.ip||'--')+'  '+(d.mdns||'')+'.local';
+  $('footVer').textContent='v'+(d.firmware||'');
   $('upd').textContent='Updated: '+new Date().toLocaleTimeString();
  }).catch(function(){$('upd').textContent='Connection lost — retrying...';});
 }
@@ -1479,6 +1608,102 @@ function changeWiFi(){var s=$('wifiSSID').value.trim(),p=$('wifiPass').value;
  var fd=new FormData();fd.append('ssid',s);fd.append('pass',p);
  fetch('/wifi/change',{method:'POST',body:fd}).then(function(){toast('Saved. Rebooting...',4000);});}
 function resetWiFi(){fetch('/wifi/reset').then(function(){toast('Rebooting into setup mode...',4000);});}
+function changeLocation(){
+ var lat=$('locLat').value.trim(),lon=$('locLon').value.trim();
+ var place=$('locPlace').value.trim();
+ var wxSta=$('locWxSta').value.trim().toUpperCase();
+ var tideSta=$('locTideSta').value.trim();
+ var tidePl=$('locTidePlace').value.trim();
+ if(!lat||!lon||!wxSta||!tideSta){toast('Latitude, longitude, weather station, and tide station are all required');return;}
+ var fd=new FormData();
+ fd.append('lat',lat);fd.append('lon',lon);fd.append('place',place);
+ fd.append('wxStation',wxSta);fd.append('tideStation',tideSta);fd.append('tidePlace',tidePl);
+ fetch('/location/change',{method:'POST',body:fd}).then(function(){toast('Saved. Rebooting...',4000);});}
+function milesBetween(lat1,lon1,lat2,lon2){
+ var R=3958.8,toRad=Math.PI/180;
+ var dLat=(lat2-lat1)*toRad,dLon=(lon2-lon1)*toRad;
+ var a=Math.sin(dLat/2)*Math.sin(dLat/2)+Math.cos(lat1*toRad)*Math.cos(lat2*toRad)
+  *Math.sin(dLon/2)*Math.sin(dLon/2);
+ return R*2*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}
+function findCity(){
+ var q=$('citySearch').value.trim();
+ if(!q){toast('Enter a city name first');return;}
+ var st=$('citySearchStatus'),sel=$('cityResults');
+ st.textContent='Searching...';sel.style.display='none';sel.innerHTML='';
+ fetch('https://geocoding-api.open-meteo.com/v1/search?name='+encodeURIComponent(q)+'&count=10&language=en&format=json')
+  .then(function(r){return r.json();})
+  .then(function(d){
+   var results=d.results||[];
+   if(!results.length){st.textContent='No matches found';return;}
+   window.cityResults=results;
+   sel.innerHTML='<option value="">Select a match…</option>'+results.map(function(r,i){
+    var loc=[r.name,r.admin1,r.country].filter(Boolean).join(', ');
+    return '<option value="'+i+'">'+loc+'</option>';
+   }).join('');
+   sel.style.display='block';
+   st.textContent=results.length+' match'+(results.length!==1?'es':'')+' found — pick one below';
+  }).catch(function(){st.textContent='Search failed — check your connection';});}
+function selectCity(){
+ var i=$('cityResults').value;
+ if(i===''||!window.cityResults)return;
+ var r=window.cityResults[i];
+ $('locLat').value=r.latitude.toFixed(4);
+ $('locLon').value=r.longitude.toFixed(4);
+ $('locPlace').value=[r.name,r.admin1].filter(Boolean).join(', ');
+ toast('Selected: '+r.name+' — now find nearest weather/tide stations below');}
+function findWxStations(){
+ var lat=parseFloat($('locLat').value),lon=parseFloat($('locLon').value);
+ if(isNaN(lat)||isNaN(lon)){toast('Enter latitude and longitude first (or find a city above)');return;}
+ var st=$('wxSearchStatus'),sel=$('wxStationList');
+ st.textContent='Searching NWS stations...';sel.style.display='none';sel.innerHTML='';
+ fetch('https://api.weather.gov/points/'+lat.toFixed(4)+','+lon.toFixed(4))
+  .then(function(r){return r.json();})
+  .then(function(d){return fetch(d.properties.observationStations);})
+  .then(function(r){return r.json();})
+  .then(function(d){
+   var stations=(d.features||[]).slice(0,10).map(function(f){
+    return {id:f.properties.stationIdentifier,name:f.properties.name};
+   });
+   if(!stations.length){st.textContent='No stations found';return;}
+   window.wxStations=stations;
+   sel.innerHTML='<option value="">Select a station…</option>'+stations.map(function(s,i){
+    return '<option value="'+i+'">'+s.id+' — '+s.name+'</option>';
+   }).join('');
+   sel.style.display='block';
+   st.textContent=stations.length+' nearest stations found';
+  }).catch(function(){st.textContent='Search failed — check your connection';});}
+function selectWxStation(){
+ var i=$('wxStationList').value;
+ if(i===''||!window.wxStations)return;
+ var s=window.wxStations[i];
+ $('locWxSta').value=s.id;
+ toast('Selected: '+s.id);}
+function findTideStations(){
+ var lat=parseFloat($('locLat').value),lon=parseFloat($('locLon').value);
+ if(isNaN(lat)||isNaN(lon)){toast('Enter latitude and longitude first');return;}
+ var st=$('tideSearchStatus'),sel=$('tideStationList');
+ st.textContent='Searching NOAA tide stations...';sel.style.display='none';sel.innerHTML='';
+ fetch('https://api.tidesandcurrents.noaa.gov/mdapi/prod/webapi/stations.json?type=tidepredictions&units=english')
+  .then(function(r){return r.json();})
+  .then(function(d){
+   var stations=(d.stations||[]).map(function(s){
+    return {id:s.id,name:s.name,state:s.state,dist:milesBetween(lat,lon,s.lat,s.lng)};
+   }).sort(function(a,b){return a.dist-b.dist;}).slice(0,10);
+   if(!stations.length){st.textContent='No stations found';return;}
+   window.tideStations=stations;
+   sel.innerHTML='<option value="">Select a station…</option>'+stations.map(function(s,i){
+    return '<option value="'+i+'">'+s.name+(s.state?', '+s.state:'')+' — '+s.dist.toFixed(1)+' mi</option>';
+   }).join('');
+   sel.style.display='block';
+   st.textContent=stations.length+' nearest stations found';
+  }).catch(function(){st.textContent='Search failed — check your connection';});}
+function selectTideStation(){
+ var i=$('tideStationList').value;
+ if(i===''||!window.tideStations)return;
+ var s=window.tideStations[i];
+ $('locTideSta').value=s.id;
+ $('locTidePlace').value=s.name;
+ toast('Selected: '+s.name);}
 var scanTimer=null;
 function signalBars(r){return r>-50?'||||':r>-60?'||| ':r>-70?'||  ':'|   ';}
 function doScan(){$('scanStatus').textContent='Starting scan...';$('netList').innerHTML='';
@@ -1510,6 +1735,7 @@ void setupRoutes() {
   server.on("/wifi/scan/result", HTTP_GET,  handleWiFiScanResult);
   server.on("/wifi/change",      HTTP_POST, handleWiFiChange);
   server.on("/wifi/reset",       HTTP_GET,  handleWiFiReset);
+  server.on("/location/change",  HTTP_POST, handleLocationChange);
   server.onNotFound([]() { server.send(404, "text/plain", "Not found"); });
 }
 
@@ -1529,7 +1755,7 @@ void startAPPortal() {
     server.send(200, "text/html", R"HTML(
 <!DOCTYPE html><html><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Weather Display Setup</title>
+<title>CoastalWeather Setup</title>
 <style>
 body{background:#111;color:#eee;font-family:Arial,sans-serif;display:flex;
  justify-content:center;align-items:center;min-height:100vh;margin:0;padding:1rem;box-sizing:border-box}
@@ -1550,7 +1776,7 @@ button:hover{background:#3a7de0}.scan-btn{background:#252840}.scan-btn:hover{bac
 #scanning{color:#8892a4;font-size:.85rem;margin:.5rem 0}
 </style></head><body>
 <div class="box">
-  <h2>Weather Display WiFi Setup</h2>
+  <h2>CoastalWeather WiFi Setup</h2>
   <button class="scan-btn" onclick="doScan()">Scan for Networks</button>
   <div id="scanning" style="display:none">Scanning...</div>
   <div id="netList"></div>
@@ -1589,62 +1815,12 @@ doScan();
     String ssid = server.arg("ssid"); ssid.trim();
     String pass = server.hasArg("password") ? server.arg("password") : "";
     saveWiFiCreds(ssid, pass);
-    server.send(200, "text/html", R"HTML(
-<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Weather Location Setup</title>
-<style>
-body{background:#111;color:#eee;font-family:Arial,sans-serif;display:flex;
- justify-content:center;align-items:center;min-height:100vh;margin:0;padding:1rem;box-sizing:border-box}
-.box{background:#1e1e2e;padding:2rem;border-radius:1rem;width:100%;max-width:340px;
- text-align:center;box-shadow:0 4px 24px rgba(0,0,0,.5)}
-h2{color:#4f8ef7;margin-bottom:1.5rem}
-input{width:100%;padding:.6rem;margin:.4rem 0 .8rem;border-radius:.5rem;
- border:1px solid #444;background:#2a2a3e;color:#fff;font-size:1rem;box-sizing:border-box}
-label{display:block;text-align:left;color:#8892a4;font-size:.82rem;margin-bottom:.1rem}
-button{width:100%;padding:.7rem;background:#4f8ef7;color:#fff;border:none;
- border-radius:.5rem;font-size:1rem;cursor:pointer;margin-bottom:.6rem}
-button:hover{background:#3a7de0}
-.note{font-size:.8rem;color:#888;margin-top:.8rem}
-</style></head><body>
-<div class="box">
-  <h2>Location Setup</h2>
-  <label>Latitude</label>
-  <input id="latInput" type="number" step="0.0001" placeholder="e.g. 34.3671" autocomplete="off">
-  <label>Longitude</label>
-  <input id="lonInput" type="number" step="0.0001" placeholder="e.g. -77.7108" autocomplete="off">
-  <label>Location Name</label>
-  <input id="placeInput" placeholder="e.g. Hampstead, NC" autocomplete="off">
-  <button onclick="doSave()">Save &amp; Finish</button>
-  <p class="note">Device will restart and connect to your WiFi.</p>
-</div>
-<script>
-function doSave(){var lat=document.getElementById('latInput').value.trim();
- var lon=document.getElementById('lonInput').value.trim();
- var place=document.getElementById('placeInput').value.trim();
- if(!lat||!lon){alert('Latitude and longitude are required.');return;}
- var fd=new FormData();fd.append('lat',lat);fd.append('lon',lon);fd.append('place',place);
- fetch('/save-location',{method:'POST',body:fd}).then(function(r){return r.text();})
- .then(function(t){document.body.innerHTML=t;});}
-</script></body></html>
-)HTML");
-  });
-
-  server.on("/save-location", HTTP_POST, []() {
-    String lat = server.hasArg("lat") ? server.arg("lat") : "";
-    String lon = server.hasArg("lon") ? server.arg("lon") : "";
-    String place = server.hasArg("place") ? server.arg("place") : "";
-    if (lat.isEmpty() || lon.isEmpty()) {
-      server.send(400, "text/plain", "Latitude and longitude are required");
-      return;
-    }
-    saveLocationConfig(lat, lon, place.isEmpty() ? (lat + ", " + lon) : place);
     String mdnsName = sanitizeMDNS(deviceName);
     server.send(200, "text/html",
       String("<!DOCTYPE html><html><head>")
       + "<meta name='viewport' content='width=device-width,initial-scale=1'>"
       + "<style>body{background:#111;color:#eee;font-family:Arial;text-align:center;padding-top:3rem}</style></head><body>"
-      + "<h2 style='color:#3ecf8e'>Setup Complete!</h2><p>Restarting...</p>"
+      + "<h2 style='color:#3ecf8e'>Credentials Saved!</h2><p>Restarting...</p>"
       + "<p style='color:#888;font-size:.9rem'>Reconnect to your WiFi, then visit<br>"
       + "<strong>http://" + mdnsName + ".local</strong></p></body></html>");
     delay(1500);
@@ -1736,7 +1912,7 @@ void setupArduinoOTA() {
 void setup() {
   Serial.begin(115200);
   delay(300);
-  Serial.println("\n[BOOT] Weather Display v" FW_VERSION);
+  Serial.println("\n[BOOT] CoastalWeather v" FW_VERSION);
   bootMillis = millis();
 
   // Force backlight on before init — GPIO floats low after OTA reboot.
@@ -1753,23 +1929,10 @@ void setup() {
   marSpr.setColorDepth(16);
   marReady = (marSpr.createSprite(tft.width(), MAR_H) != nullptr);
   if (marReady) marSpr.setTextFont(2);
-  coastSpr.setColorDepth(16);
-  coastReady = (coastSpr.createSprite(tft.width(), COAST_H) != nullptr);
-  if (coastReady) coastSpr.setTextFont(2);
 
   drawBootScreen();
   loadPrefs();
-  loadLocationConfig(wxLat, wxLon, wxPlace);
-
-  // Initialize other location variables to defaults (can be extended later for configurability)
-  wxStation = DEFAULT_WX_STATION;
-  tideStation = DEFAULT_TIDE_STATION;
-  marineZone = DEFAULT_MARINE_ZONE;
-  ripZone = DEFAULT_RIP_ZONE;
-  coastalZone = DEFAULT_COASTAL_ZONE;
-  coastalOffice = DEFAULT_COASTAL_OFFICE;
-
-  Serial.printf("[Config] Location: %s (%s, %s)\n", wxPlace.c_str(), wxLat.c_str(), wxLon.c_str());
+  loadLocationConfig();
 
   String ssid, pass;
   loadWiFiCreds(ssid, pass);
@@ -1796,7 +1959,7 @@ void setup() {
   nextWeatherAt   = 0;         // weather immediately
   nextTideAt      = 3000;      // tides a few seconds later (needs NTP)
   nextMarineAt    = 6000;      // marine advisory shortly after
-  nextCoastAt     = 9000;      // coastal forecast bulletin shortly after that
+  nextBatteryAt   = 0;         // battery immediately (local sensor, no WiFi needed)
 }
 
 // ============================================================
@@ -1837,14 +2000,6 @@ void loop() {
     renderMarFrame();
   }
 
-  // Scrolling coastal-forecast marquee.
-  if (coastScroll && millis() - lastCoastScrollMs >= SCROLL_STEP_MS) {
-    lastCoastScrollMs = millis();
-    coastOff -= SCROLL_STEP_PX;
-    if (coastOff <= -(coastTextW + COAST_GAP)) coastOff += (coastTextW + COAST_GAP);
-    renderCoastFrame();
-  }
-
   // Weather refresh.
   if (WiFi.isConnected() && millis() >= nextWeatherAt) {
     if (fetchWeather()) {
@@ -1876,14 +2031,11 @@ void loop() {
     drawMarinePanel();
   }
 
-  // Coastal waters forecast refresh.
-  if (WiFi.isConnected() && millis() >= nextCoastAt) {
-    if (fetchCoastalForecast()) {
-      nextCoastAt = millis() + COASTAL_INTERVAL_MS;
-      drawCoastalPanel();
-    } else {
-      nextCoastAt = millis() + COASTAL_RETRY_MS;
-    }
+  // Battery refresh (local ADC read -- no WiFi needed).
+  if (millis() >= nextBatteryAt) {
+    fetchBattery();
+    nextBatteryAt = millis() + BATTERY_INTERVAL_MS;
+    drawBatteryPanel();
   }
 
   // Footer refresh (IP / hostname).

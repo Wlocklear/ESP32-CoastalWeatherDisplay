@@ -1,3 +1,7 @@
+# Personal configuration (copy include/user_config.example.h to
+# include/user_config.h and edit — never committed)
+include/user_config.h
+
 # PlatformIO
 .pio/
 .pioenvs/
