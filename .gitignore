@@ -1,23 +1,21 @@
-# Personal configuration (copy include/user_config.example.h to
-# include/user_config.h and edit — never committed)
-include/user_config.h
-
-# PlatformIO
+# PlatformIO / build
 .pio/
 .pioenvs/
 .piolibdeps/
-
-# Build artifacts
 build/
 *.bin
 *.elf
 *.hex
 *.map
+compile_commands.json
+.cache/
 
-# Editor
+# Secrets / personal data â€” never committed (commit a *.example.h template instead)
+include/user_config.h
+include/secrets.h
+
+# OS / editor
 .vscode/
 .idea/
-
-# OS cruft
 .DS_Store
 Thumbs.db

@@ -4,11 +4,6 @@ A remote TFT display (Freenove ESP32-S3 2.8", ILI9341 240x320) that pulls
 NWS weather, NOAA tide, and marine advisory data directly over WiFi and
 shows it on-screen — no source unit or paired sensor required.
 
-ESP32 firmware. The version lives in one place — `version.h` — and should match the
-git tag for each release.
-
-> **Current version:** v1.0
-
 ## Hardware
 
 - **Board:** Freenove ESP32-S3 2.8" display (ESP32-S3-DevKitC target)
@@ -17,7 +12,7 @@ git tag for each release.
 - **Battery sense:** GPIO9, board's built-in 0.5x resistive divider (JST battery
   connector) — see `fetchBattery()` in `src/main.cpp`
 - **Graphics:** [TFT_eSPI](https://github.com/Bodmer/TFT_eSPI), configured entirely
-  via `build_flags` in `platformio.ini` (no `User_Setup.h` to edit)
+  via `build_flags` in `platformio.ini` (no `User_Setup.h` to edit); `USE_HSPI_PORT=1` is required
 
 > ⚠️ The TFT **SPI pins** (`TFT_MISO/MOSI/SCLK/CS/DC/RST`) in `platformio.ini` are
 > reasonable defaults — **verify them against your board / the prior Freenove
@@ -75,15 +70,6 @@ pio run -e esp32s3-ota -t upload
 OTA is also available in a browser at `http://coastal-weather-display.local/update`
 (ElegantOTA).
 
-## Versioning
+## Releasing
 
-`version.h` defines `FW_VERSION`. To cut a release: bump it, commit, then tag to match:
-
-```bash
-git tag v1.0
-git push --tags
-```
-
-## License
-
-_TODO: pick one._
+`python release.py <X.Y>` — bumps `FW_VERSION` in `include/version.h`, commits, tags and pushes.

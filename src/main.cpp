@@ -1,45 +1,4 @@
-/*
- ******************************************************************************
- *  Coastal Weather Display
- ******************************************************************************
- *
- *  TARGET BOARD:
- *    Freenove ESP32-S3 Display FNK0104AB — ILI9341 2.8" IPS 240x320.
- *    Display SPI pins + backlight (GPIO45) are set via build_flags in
- *    platformio.ini. USE_HSPI_PORT=1 is required (see platformio.ini).
- *
- *  WHAT IT SHOWS (portrait):
- *    TOP    — Weather icon for the configured location (US National Weather
- *             Service, api.weather.gov, no API key) NEXT TO a large CURRENT
- *             temperature + humidity (live station observation, wxStation).
- *             The forecast condition scrolls beneath.
- *    MIDDLE — Next high/low TIDES for the configured tide station (NOAA
- *             CO-OPS), plus a moon-phase strip. Needs NTP time to know which
- *             events are upcoming. Below that, NWS hazard alerts: small-craft
- *             advisory (marine zone) + rip current/beach hazards statement
- *             (land zone), one combined scrolling headline, then live wind +
- *             barometric pressure (same station observation as the hero
- *             readings).
- *    BOTTOM — On-board battery voltage + charge percentage (GPIO9, the
- *             Freenove FNK0104AB's built-in 0.5x divider), shown as a
- *             compact meter just above the IP/version footer.
- *
- *  WiFi SETUP (no hardcoded credentials):
- *    First boot / failed join -> AP "Coastal Weather Display-XXXX", open http://192.168.4.1,
- *    pick network + password. Saved to NVS; creds from previous firmware reused.
- *
- *  LOCATION / STATION SETUP:
- *    Defaults come from include/user_config.h. Change anytime from the web
- *    dashboard's "Change Location / Stations" card (lat/lon, place name, NWS
- *    weather station code, NOAA tide station number). Saved to NVS; device
- *    reboots to pick up the new forecast URL and station IDs. Marine/rip
- *    zones stay fixed to the user_config.h values regardless.
- *
- *  OTA:
- *    ElegantOTA  -> http://<device>.local/update  (login in user_config.h)
- *    ArduinoOTA  -> PlatformIO env:esp32s3-ota     (port 3232)
- ******************************************************************************/
-
+// Coastal Weather Display firmware — hardware, wiring and operation: see README.md
 #include "version.h"
 
 // ── Includes ────────────────────────────────────────────────────────────────
@@ -203,9 +162,7 @@ String sanitizeMDNS(const String& s);
 String wifiQuality(int rssi);
 String apSsid();
 
-// ============================================================
 //  NVS HELPERS
-// ============================================================
 void loadPrefs() {
   prefs.begin("system", true);
   deviceName = prefs.getString("name", DEFAULT_DEVICE_NAME);
@@ -256,9 +213,7 @@ void saveLocationConfig(const String& lat, const String& lon, const String& plac
   prefs.end();
 }
 
-// ============================================================
 //  mDNS / MISC HELPERS
-// ============================================================
 String sanitizeMDNS(const String& input) {
   String out = "";
   for (int i = 0; i < (int)input.length(); i++) {
@@ -307,9 +262,7 @@ static String formatClock(const String& t) {
   return String(h12) + ":" + mm + ap;
 }
 
-// ============================================================
 //  THEME COLORS
-// ============================================================
 void initColors() {
   COL_BG     = tft.color565(0x0D, 0x0F, 0x1A);
   COL_CARD   = tft.color565(0x15, 0x17, 0x24);
@@ -332,9 +285,7 @@ void initColors() {
   WXC_SNOW     = tft.color565(0xFF, 0xFF, 0xFF);
 }
 
-// ============================================================
 //  WEATHER ICON DRAWING (procedural)
-// ============================================================
 static void drawSun(int cx, int cy, int r) {
   for (int a = 0; a < 360; a += 45) {
     float rad = a * DEG_TO_RAD;
@@ -420,9 +371,7 @@ static WxIcon mapCondition(const String& s) {
   return WX_UNKNOWN;
 }
 
-// ============================================================
 //  DISPLAY — BOOT / AP SCREENS
-// ============================================================
 void drawBootScreen() {
   tft.fillScreen(COL_BG);
   tft.setTextDatum(MC_DATUM);
@@ -469,9 +418,7 @@ static void drawTitleBar(const String& title) {
   tft.setTextDatum(TL_DATUM);
 }
 
-// ============================================================
 //  DISPLAY — CONDITION MARQUEE (scrolling forecast text)
-// ============================================================
 static void renderCondFrame() {
   if (!condReady) return;
   condSpr.fillSprite(COL_BG);
@@ -503,9 +450,7 @@ static void setupCondition() {
   renderCondFrame();
 }
 
-// ============================================================
 //  DISPLAY — HERO (live temp + humidity beside the weather icon)
-// ============================================================
 void drawHeroTemp() {
   const int W = tft.width();
   tft.fillRect(44, 26, W - 44, 50, COL_BG);          // clear numbers, keep icon (x<44)
@@ -534,9 +479,7 @@ void drawHeroTemp() {
   tft.drawString("%", hx2 + hw + 5, y, 4);
 }
 
-// ============================================================
 //  DISPLAY — WEATHER PANEL  (title 0..23, body 24..75, cond 76..94)
-// ============================================================
 void drawWeatherPanel() {
   const int W = tft.width();
   drawTitleBar(wxPlace);
@@ -546,10 +489,8 @@ void drawWeatherPanel() {
   setupCondition();
 }
 
-// ============================================================
 //  MOON PHASE  (needs NTP time)
 //  phase 0..1: 0/1 = new, 0.25 = first quarter, 0.5 = full, 0.75 = last quarter
-// ============================================================
 static float moonPhase() {
   time_t now = time(nullptr);
   if (now < 1600000000) return -1.0f;             // time not synced yet
@@ -589,9 +530,7 @@ static void drawMoonPhase(int cx, int cy, int r, float phase) {
   tft.drawCircle(cx, cy, r, COL_DIM);             // outline
 }
 
-// ============================================================
 //  DISPLAY — TIDES PANEL  (border 95, body 96..188)
-// ============================================================
 static void drawTideRow(int y, bool high, const String& clock, const String& ht) {
   const int W = tft.width();
   const int m = y + 9;
@@ -661,10 +600,8 @@ void drawTidesPanel() {
   drawMoonSection();
 }
 
-// ============================================================
 //  DISPLAY — MARINE / SMALL CRAFT ADVISORY  (border 189, body 190..230)
 //  Advisory headline scrolls (marquee sprite).
-// ============================================================
 static void drawBoat(int cx, int cy, uint16_t col) {
   tft.fillTriangle(cx, cy - 9, cx, cy + 2, cx + 9, cy + 2, col);  // sail
   tft.drawLine(cx, cy - 9, cx, cy + 2, col);                      // mast
@@ -719,11 +656,9 @@ void drawMarinePanel() {
   setupMarineMarquee();          // Font-2 scrolling line at MAR_Y
 }
 
-// ============================================================
 //  DISPLAY — WIND / PRESSURE  (231..255, the strip between MARINE and the
 //  BATTERY panel). Comes from the same live station observation as the
 //  hero temp/humidity -- no extra API cost.
-// ============================================================
 static const char* compassDir(float deg) {
   if (isnan(deg)) return "--";
   static const char* DIRS[16] = { "N","NNE","NE","ENE","E","ESE","SE","SSE",
@@ -749,13 +684,6 @@ void drawWindPressure() {
   tft.setTextDatum(TL_DATUM);
 }
 
-// ============================================================
-//  DISPLAY — BATTERY  (border 256, body 257..307) — just above the footer.
-//  Reads the Freenove FNK0104AB's on-board battery sense (GPIO9, 0.5x
-//  divider) -- see fetchBattery(). No "Charging" state: this board has no
-//  charge-status pin, and a voltage-trend guess proved unreliable under
-//  load. Only "Fully charged" is shown, since that's a real threshold.
-// ============================================================
 static uint16_t batteryColor(int percent) {
   if (percent > 60) return COL_GREEN;
   if (percent > 20) return COL_WARN;
@@ -827,9 +755,7 @@ void drawMainScreen() {
   needsFullRedraw = false;
 }
 
-// ============================================================
 //  HTTPS JSON GET (shared by NWS + NOAA)
-// ============================================================
 static bool httpsGetJson(const String& url, JsonDocument& doc,
                          JsonDocument* filter, const char* accept) {
   WiFiClientSecure client;
@@ -854,9 +780,7 @@ static bool httpsGetJson(const String& url, JsonDocument& doc,
   return true;
 }
 
-// ============================================================
 //  WEATHER — NWS FETCH
-// ============================================================
 static bool resolveForecastUrl() {
   JsonDocument filter;
   filter["properties"]["forecast"] = true;
@@ -932,9 +856,7 @@ bool fetchWeather() {
   return wx.valid;
 }
 
-// ============================================================
 //  TIDES — NOAA CO-OPS FETCH (next high/low)
-// ============================================================
 bool fetchTides() {
   if (!WiFi.isConnected()) return false;
   struct tm ti;
@@ -980,9 +902,7 @@ bool fetchTides() {
   return tides.valid;
 }
 
-// ============================================================
 //  MARINE — NWS active alerts for the coastal-waters zone (small craft, etc.)
-// ============================================================
 bool fetchMarine() {
   if (!WiFi.isConnected()) return false;
 
@@ -1016,11 +936,9 @@ bool fetchMarine() {
   return true;
 }
 
-// ============================================================
 //  RIP CURRENT / BEACH HAZARDS — NWS active alerts for the LAND coastal
 //  zone (RIP_ZONE). Same alerts feed/shape as fetchMarine(), just a
 //  different zone and preferred event names.
-// ============================================================
 bool fetchRipCurrent() {
   if (!WiFi.isConnected()) return false;
 
@@ -1056,10 +974,8 @@ bool fetchRipCurrent() {
   return true;
 }
 
-// ============================================================
 //  BATTERY — Freenove FNK0104AB on-board sense (GPIO9, 0.5x resistive
 //  divider). Local ADC read, no WiFi/HTTP involved.
-// ============================================================
 // Single-cell Li-ion discharge curve (rough, unloaded-voltage estimate).
 static int batteryPercent(float v) {
   static const struct { float v; int p; } CURVE[] = {
@@ -1096,9 +1012,7 @@ bool fetchBattery() {
   return true;
 }
 
-// ============================================================
 //  STATUS JSON  (for the web dashboard)
-// ============================================================
 String buildStatusJson() {
   unsigned long nowMs = millis();
   JsonDocument doc;
@@ -1177,9 +1091,7 @@ String buildStatusJson() {
   return out;
 }
 
-// ============================================================
 //  WEB ROUTE HANDLERS
-// ============================================================
 void handleStatus() { server.send(200, "application/json", buildStatusJson()); }
 void handleHealth() { server.send(200, "text/plain", "OK"); }
 
@@ -1267,9 +1179,7 @@ void handleWiFiScanResult() {
   server.send(200, "application/json", out);
 }
 
-// ============================================================
 //  WEB DASHBOARD
-// ============================================================
 void handleRoot() {
   server.send(200, "text/html", R"DASH(
 <!DOCTYPE html><html lang="en"><head>
@@ -1741,9 +1651,7 @@ void setupRoutes() {
   server.onNotFound([]() { server.send(404, "text/plain", "Not found"); });
 }
 
-// ============================================================
 //  AP SETUP PORTAL
-// ============================================================
 void startAPPortal() {
   inAPMode = true;
   String ssid = apSsid();
@@ -1852,9 +1760,7 @@ doScan();
   server.begin();
 }
 
-// ============================================================
 //  WiFi — STATION CONNECT
-// ============================================================
 bool connectWiFi() {
   String ssid, pass;
   loadWiFiCreds(ssid, pass);
@@ -1878,9 +1784,7 @@ bool connectWiFi() {
   return false;
 }
 
-// ============================================================
 //  ArduinoOTA
-// ============================================================
 void setupArduinoOTA() {
   ArduinoOTA.setHostname(sanitizeMDNS(deviceName).c_str());
   ArduinoOTA.onStart([]() {
@@ -1908,9 +1812,7 @@ void setupArduinoOTA() {
   Serial.println("[ArduinoOTA] Ready on port 3232");
 }
 
-// ============================================================
 //  SETUP
-// ============================================================
 void setup() {
   Serial.begin(115200);
   delay(300);
@@ -1964,9 +1866,7 @@ void setup() {
   nextBatteryAt   = 0;         // battery immediately (local sensor, no WiFi needed)
 }
 
-// ============================================================
 //  LOOP
-// ============================================================
 void loop() {
   server.handleClient();
   ElegantOTA.loop();

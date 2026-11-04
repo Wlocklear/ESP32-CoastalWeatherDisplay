@@ -230,3 +230,57 @@ repo's `main`/`release`/`Battery` branches) into one program, renamed
 ### Fixed
 - ...
 -->
+
+## Design notes (moved from code comments, 2026-10-23)
+
+**`include/user_config.example.h`** — before `// Contact for the api.weather.gov User-Agent header. NWS asks every c`
+
+```text
+── Personal configuration TEMPLATE ─────────────────────────────────────────
+Copy this file to include/user_config.h and fill in your own values.
+user_config.h is gitignored so your email, credentials, and location never
+end up in the repo.
+  cp include/user_config.example.h include/user_config.h
+```
+
+**`include/user_config.example.h`** — before `#define DEFAULT_WX_LAT     "40.7128"`
+
+```text
+── Default location (first flash only — changeable from the web dashboard,
+   saved to NVS) ──────────────────────────────────────────────────────────
+Example values below are New York City. Find yours:
+  * lat/lon + place: any map service
+  * WX_STATION: nearest ASOS/AWOS station with live observations — open
+    https://api.weather.gov/points/{lat},{lon} then the observationStations
+    URL it returns, and pick the first station (e.g. an airport code).
+```
+
+**`include/user_config.example.h`** — before `#define MARINE_ZONE      "ANZ338"    // New York Harbor`
+
+```text
+── Fixed hazard zones (not runtime-configurable — set for your area) ───────
+Find your zones via https://api.weather.gov/points/{lat},{lon}:
+  * forecastZone gives the land zone (RIP_ZONE, e.g. "NYZ072")
+  * marine zones (AMZ/ANZ/...) are listed at
+    https://www.weather.gov/gis/MarineZones — pick the coastal-waters zone
+    off your shore (MARINE_ZONE)
+```
+
+**`include/user_config.h`** — before `#define NWS_CONTACT  "wlock75@gmail.com"`
+
+```text
+Personal configuration for this specific device. Gitignored — never committed.
+Generated from this device's previously-hardcoded values during the
+CoastalWeather consolidation; adjust freely (location/stations are also
+changeable later from the web dashboard's "Change Location / Stations" card).
+```
+
+**`src/main.cpp`** — before `static uint16_t batteryColor(int percent) {`
+
+```text
+ DISPLAY — BATTERY  (border 256, body 257..307) — just above the footer.
+ Reads the Freenove FNK0104AB's on-board battery sense (GPIO9, 0.5x
+ divider) -- see fetchBattery(). No "Charging" state: this board has no
+ charge-status pin, and a voltage-trend guess proved unreliable under
+ load. Only "Fully charged" is shown, since that's a real threshold.
+```
